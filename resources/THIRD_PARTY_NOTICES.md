@@ -15,6 +15,10 @@ names are used in source documentation to identify the behavioral reference.
 - Demucs / HTDemucs, Meta and contributors. MIT. Converted from the official
   checkpoint 955717e8-8726e21a.th to the native four-source FP16 format.
   Source: https://github.com/facebookresearch/demucs
+- Steinberg VST3 SDK, Steinberg Media Technologies GmbH and contributors.
+  The version bundled by JUCE is used under its GPL-3.0 option. Its full SDK
+  license accompanies the app at Resources/Licenses/VST3-SDK-LICENSE.txt.
+  Source: https://github.com/steinbergmedia/vst3sdk
 - Eigen, Eigen contributors. MPL-2.0; individual file notices apply.
   Source: https://gitlab.com/libeigen/eigen
 

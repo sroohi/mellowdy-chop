@@ -1,12 +1,12 @@
 #include <juce_gui_extra/juce_gui_extra.h>
-#include "ui/MainComponent.h"
+#include "ui/StudioComponent.h"
 
 namespace samplify {
 class SamplifyApplication final : public juce::JUCEApplication, private juce::MenuBarModel,
                                  private juce::Timer {
 public:
     const juce::String getApplicationName() override { return "Samplify"; }
-    const juce::String getApplicationVersion() override { return "0.2.0"; }
+    const juce::String getApplicationVersion() override { return "0.3.0"; }
     bool moreThanOneInstanceAllowed() override { return false; }
 
     void initialise(const juce::String& arguments) override {
@@ -44,10 +44,14 @@ public:
             menu.addSeparator();
             menu.addItem(4, "Export Selected Pad...");
             menu.addItem(5, "Export All Pads...");
+            menu.addSeparator();
+            menu.addItem(10, "Import Audio Loop...");
+            menu.addItem(11, "Bounce Selected Pattern...");
         } else if (index == 1) {
             menu.addItem(6, "Audio & MIDI Settings...");
             menu.addItem(7, "Stop All Voices");
             menu.addItem(8, "Load Demo");
+            menu.addItem(12, "Start / Stop Recording Master Mix...");
         } else {
             menu.addItem(9, "About Samplify");
         }
@@ -65,10 +69,13 @@ public:
             case 6: content.showAudioSettings(); break;
             case 7: content.stopPlayback(); break;
             case 8: content.loadDemo(); break;
+            case 10: window->studio().workstation().importAudioClip(); break;
+            case 11: window->studio().workstation().bounceSelectedPattern(); break;
+            case 12: window->studio().workstation().toggleMasterRecording(); break;
             case 9: juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,
-                "Samplify by MP Audio", "Standalone sampler / version 0.2.0\n\n"
-                "Cue performance and editing based on the documented Serato Sample 2.x workflow.\n"
-                "Independent Rubber Band pitch/time and native HTDemucs four-stem processing.\n"
+                "Samplify by MP Audio", "Native sampling workstation / version 0.3.0\n\n"
+                "32-cue sampler, pattern recording, arrangement, FX and live performance.\n"
+                "Native HTDemucs Stems, Rubber Band pitch/time, built-in effects and AU/VST3 hosting.\n"
                 "This app does not contain Serato's proprietary engines.\n\n"
                 "GPL-3.0. Built with JUCE 8; Rubber Band and Demucs notices are bundled."); break;
             default: break;
@@ -77,7 +84,7 @@ public:
 
 private:
     bool saveSmokeImage(const juce::String& name) {
-        auto& main = window->content();
+        auto& main = window->studio();
         auto image = main.createComponentSnapshot(main.getLocalBounds(), true, 1.0f);
         auto output = smokeDirectory.getChildFile(name).createOutputStream();
         if (!output) return false;
@@ -105,56 +112,75 @@ private:
                         if (!item.value.isBool() || !static_cast<bool>(item.value))
                             throw std::runtime_error("Native stem UI workflow failed: " + item.name.toString().toStdString());
                 } else throw std::runtime_error("Native stem UI workflow returned no checks");
-                stemSeparationCompleted = true; finishSmoke({});
+                stemSeparationCompleted = true;
+                workstationChecks = window->studio().workstation().runWorkflowSmoke();
+                if (auto* checks = workstationChecks.getDynamicObject()) {
+                    if (checks->getProperties().size() < 10) throw std::runtime_error("Workstation smoke returned too few checks");
+                    for (const auto& item : checks->getProperties())
+                        if (!item.value.isBool() || !static_cast<bool>(item.value))
+                            throw std::runtime_error("Workstation UI workflow failed: " + item.name.toString().toStdString());
+                } else throw std::runtime_error("Workstation UI workflow returned no checks");
+                finishSmoke({});
             }
         } catch (const std::exception& e) { finishSmoke(e.what()); }
     }
     void finishSmoke(const juce::String& error) {
         stopTimer();
         auto& main = window->content();
+        auto& shell = window->studio();
+        shell.showPage(0);
         bool success = error.isEmpty() && blankScreenshotSaved && stemSeparationCompleted;
         const bool normalSaved = saveSmokeImage("Samplify.png");
-        const auto normalWidth = main.getWidth(), normalHeight = main.getHeight();
-        main.setSize(960, 720);
+        const auto normalWidth = shell.getWidth(), normalHeight = shell.getHeight();
+        shell.setSize(1040, 830);
         const bool compactSaved = saveSmokeImage("Samplify-compact.png");
-        main.setSize(normalWidth, normalHeight);
+        shell.setSize(normalWidth, normalHeight);
+        bool pagesSaved = true;
+        constexpr const char* names[] { "Samplify-arrange.png", "Samplify-patterns.png", "Samplify-fx.png", "Samplify-perform.png" };
+        for (int i = 0; i < 4; ++i) { shell.showPage(i + 1); pagesSaved = saveSmokeImage(names[i]) && pagesSaved; }
+        shell.showPage(0);
         auto* report = new juce::DynamicObject();
         report->setProperty("demoAnalysedAndPadsRendered", main.isReadyForSmokeTest());
         report->setProperty("workflowChecks", workflowChecks);
         report->setProperty("stemWorkflowChecks", stemWorkflowChecks);
+        report->setProperty("workstationChecks", workstationChecks);
+        report->setProperty("workstationScreenshotsSaved", pagesSaved);
         report->setProperty("stemSeparationCompleted", stemSeparationCompleted);
         report->setProperty("blankScreenshotSaved", blankScreenshotSaved);
         report->setProperty("error", error);
-        report->setProperty("width", main.getWidth()); report->setProperty("height", main.getHeight());
+        report->setProperty("width", shell.getWidth()); report->setProperty("height", shell.getHeight());
        #if JUCE_MAC
         report->setProperty("macOSRun", true);
        #else
         report->setProperty("macOSRun", false);
        #endif
-        report->setProperty("screenshotSaved", normalSaved && compactSaved);
-        success = success && normalSaved && compactSaved;
+        report->setProperty("screenshotSaved", normalSaved && compactSaved && pagesSaved);
+        success = success && normalSaved && compactSaved && pagesSaved;
         success = smokeDirectory.getChildFile("smoke.json").replaceWithText(juce::JSON::toString(juce::var(report))) && success;
         juce::Logger::writeToLog(success ? "Samplify UI smoke test passed" : "Samplify UI smoke test failed: " + error);
         setApplicationReturnValue(success ? 0 : 1); quit();
     }
     class MainWindow final : public juce::DocumentWindow {
     public:
-        MainWindow() : DocumentWindow("Samplify - MP Audio", juce::Colour(0xff171a1c), allButtons) {
+        MainWindow() : DocumentWindow("Samplify - MP Audio", HardwareLookAndFeel::chassis(), allButtons) {
             setUsingNativeTitleBar(true);
-            auto* main = new MainComponent();
+            auto* main = new StudioComponent();
             setContentOwned(main, true);
             setResizable(true, false);
-            setResizeLimits(960, 744, 2560, 1800);
-            centreWithSize(1280, 984);
+            setResizeLimits(1040, 830, 2560, 1800);
+            const auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay();
+            const auto area = display ? display->userArea : juce::Rectangle<int>(1440, 1100);
+            centreWithSize(juce::jlimit(1040, 1440, area.getWidth() - 60), juce::jlimit(830, 1060, area.getHeight() - 80));
             setVisible(true);
         }
-        MainComponent& content() { return *static_cast<MainComponent*>(getContentComponent()); }
+        StudioComponent& studio() { return *static_cast<StudioComponent*>(getContentComponent()); }
+        MainComponent& content() { return studio().sampler(); }
         void closeButtonPressed() override { JUCEApplication::getInstance()->systemRequestedQuit(); }
     };
-    juce::LookAndFeel_V4 lookAndFeel;
+    HardwareLookAndFeel lookAndFeel;
     std::unique_ptr<MainWindow> window;
     juce::File smokeDirectory;
-    juce::var workflowChecks, stemWorkflowChecks;
+    juce::var workflowChecks, stemWorkflowChecks, workstationChecks;
     int smokeAttempts = 0, smokeStage = 0;
     bool blankScreenshotSaved = false, stemSeparationCompleted = false;
 };

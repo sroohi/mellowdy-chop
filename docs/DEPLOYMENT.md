@@ -1,4 +1,4 @@
-# Build and distribute Samplify 0.2
+# Build and distribute Samplify 0.3
 
 Samplify is a standalone JUCE/C++ app for macOS 12 and later, built for Apple
 Silicon and Intel. Its sampling workflow follows the public Serato Sample 2.x
@@ -6,6 +6,12 @@ manual; the [acceptance contract](SERATO_PARITY.md) tracks the individual refere
 behaviors and remaining comparisons. Native HTDemucs supplies four-stem
 separation, and Rubber Band supplies independent pitch/time processing. These are
 independent engines, not Serato's proprietary processing.
+
+Version 0.3 adds beige panels and green displays, a pattern editor, an eight-track
+arranger, built-in effects presets, and performance/output-recording controls.
+Track and master inserts host installed stereo Audio Unit and VST3 effects.
+No third-party plugins are bundled; plugin vendors' licenses and activation
+requirements still apply.
 
 The approximately 84 MB native model is bundled inside the app. Running the app
 does not need Python, a DAW, a separate model download, or an online account.
@@ -16,10 +22,10 @@ Python and PyTorch are used only when preparing the model during a source build.
 A push to `codex/samplify-native`, or a manual GitHub Actions workflow run,
 publishes a prerelease after the universal macOS build, all required tests,
 native demo smoke test, and packaging succeed. Its tag is
-`samplify-v0.2.0-<first-seven-commit-characters>`. For commit `abc1234…`, the URL is:
+`samplify-v0.3.0-<first-seven-commit-characters>`. For commit `abc1234…`, the URL is:
 
 ```text
-https://github.com/sroohi/mellowdy-chop/releases/tag/samplify-v0.2.0-abc1234
+https://github.com/sroohi/mellowdy-chop/releases/tag/samplify-v0.3.0-abc1234
 ```
 
 Download the DMG and drag Samplify to Applications, or extract the app ZIP and
@@ -29,8 +35,10 @@ downloaded files in one directory and run `shasum -a 256 -c SHA256SUMS.txt` to
 verify them; missing optional downloads will be reported as missing files.
 
 The release also includes `Samplify.png`, `Samplify-empty.png`,
-`Samplify-compact.png`, and `smoke.json` from the native macOS controller checks
-and neural-separation workflow. The separate `ggml-model-htdemucs-4s-f16.bin` asset is for source
+`Samplify-compact.png`, `Samplify-arrange.png`, `Samplify-patterns.png`,
+`Samplify-fx.png`, `Samplify-perform.png`, and `smoke.json` from the native macOS
+sampler, neural-separation, and workstation controller checks. The separate
+`ggml-model-htdemucs-4s-f16.bin` asset is for source
 builders; ordinary app users already have that file inside the bundle. Preserve
 the model's `HTDemucs-model-provenance.json` and full `HTDemucs-MIT.txt` notice when
 copying or redistributing the standalone model.
@@ -72,7 +80,7 @@ PyTorch or converting again. `SAMPLIFY_MODEL_PYTHON` can select the Python 3.12
 interpreter used to create this isolated environment.
 
 PyTorch 2.6 macOS conversion wheels support Apple Silicon. For an Intel source
-build, download the converted model from a Samplify 0.2 release, or use the model
+build, download the converted model from a Samplify 0.3 release, or use the model
 inside a released app:
 
 ```sh
@@ -109,9 +117,14 @@ ctest --test-dir build --build-config Release --timeout 900 --output-on-failure
 The Actions workflow performs this sequence on an Apple Silicon macOS runner.
 It caches converted model bytes by their pinned hash and converter source hash,
 installs Python conversion dependencies only on cache misses, and rechecks the
-model hash on every run. It verifies that all six core DSP, cue editing,
-metadata, Rubber Band, neural stem inference, and audio/session integration suites are registered,
-then runs all of them. The actual-inference stem test has a 900-second timeout;
+model hash on every run. It verifies that all eleven required suites are
+registered, then runs all of them: core DSP, cue editing, metadata, Rubber Band,
+neural stem inference, audio/session integration, workstation model, built-in
+effects, workstation audio, workstation session, and plugin hosting. On macOS,
+the plugin-host suite also loads, processes, and restores a real Apple stereo
+Audio Unit. Its deterministic fixture tests exercise insert routing, bypass,
+state, missing-plugin recovery, and safe instance retirement. The
+actual-inference stem test has a 900-second timeout;
 it is not replaced by an availability or zero-test check.
 
 JUCE, Rubber Band, Eigen, and native Demucs source archives are pinned in CMake.
@@ -129,8 +142,8 @@ hash, and required license resources. It checks the resulting app signature and
 disk image, then creates ZIP/DMG/model checksums. The bundle includes:
 
 - `Contents/Resources/ggml-model-htdemucs-4s-f16.bin`.
-- `Contents/Resources/THIRD_PARTY_NOTICES.md`, `LICENSE`, and `RubberBand-COPYING.txt`.
-- `Contents/Resources/Licenses/Demucs-MIT.txt`, `DemucsCpp-MIT.txt`, and `Eigen-MPL-2.0.txt`.
+- `Contents/Resources/THIRD_PARTY_NOTICES.md`, `LICENSE`, `RubberBand-COPYING.txt`.
+- `Contents/Resources/Licenses/Demucs-MIT.txt`, `DemucsCpp-MIT.txt`, `Eigen-MPL-2.0.txt`, and `VST3-SDK-LICENSE.txt`.
 
 The MIT model/runtime notices and Eigen MPL 2.0 notice accompany their respective
 components. The app's GPL license and the JUCE/Rubber Band distribution notices
@@ -158,18 +171,30 @@ staples the DMG. Signature or notarization failure stops packaging. A
 `KEYCHAIN_PROFILE` without `CODESIGN_IDENTITY` is rejected. Leaving both unset
 produces the marked ad-hoc development package.
 
+For Developer ID signing, `script/Samplify.entitlements` adds only
+`com.apple.security.cs.disable-library-validation=true`. This permits the
+in-process host to load effects signed by other developers rather than only
+Apple or Samplify's own signing team. The package script reads the actual signed
+entitlements back and verifies this flag; it rejects JIT, unsigned executable
+memory, or App Sandbox exceptions. The default ad-hoc CI path remains unchanged
+and does not enable hardened runtime. No third-party plugin is re-signed or
+bundled by this process, and the entitlement does not provide plugin crash
+isolation or bypass a plugin's own installation/security requirements.
+
 ## Native evidence and functional acceptance
 
 Normal startup presents an empty load screen. The CI-only `--smoke-test` path
 captures that state, explicitly loads the demo, exercises the actual controller
-workflows, completes native HTDemucs separation through the UI, captures full and
-compact PNG evidence plus a JSON report, and exits. CI opens the real `.app`
+workflows, completes native HTDemucs separation through the UI, exercises the
+workstation, captures seven PNGs plus a JSON report, and exits. CI opens the real `.app`
 through `open --args` and allows 270 seconds for startup, inference, and rendering
 (the app's internal workflow timeout is 240 seconds). It
-requires the macOS/demo/rendering, blank-screenshot, and stem-completion flags to
+requires the macOS/demo/rendering, blank-screenshot, stem-completion, and
+workstation-screenshot flags to
 be true, at least ten named `workflowChecks` booleans to be true, and every named
-`stemWorkflowChecks` boolean to be true. Missing or empty check groups fail. It
-also verifies all three PNGs and matching full-image dimensions. A missing runner
+`stemWorkflowChecks` boolean to be true. `workstationChecks` must contain at least
+ten named booleans, all true. Missing or undersized check groups fail. CI also
+verifies all seven PNGs and matching full-image dimensions. A missing runner
 GUI or absent valid report fails the workflow. The separate native smoke artifact
 and release assets contain the evidence.
 
@@ -181,6 +206,15 @@ keyboard mode, tempo/pitch control, undo/redo, session restore, stem separation
 quality, and WAV export. Test Intel and Apple Silicon hardware before shipping
 a universal public release. Gatekeeper and notarization outcomes also require
 their own signing and trust checks.
+
+For the workstation, check pattern editing and playback, eight-track arrangement,
+track/master effects, presets, performance controls, and recording the actual
+output. Test installed stereo AU and VST3 effects for scanning, loading, editor
+interaction, bypass, state restore, and live audio. A universal app runs one
+architecture at a time: an Apple Silicon process cannot load an Intel-only
+in-process plugin, and an Intel process cannot load an ARM-only plugin. Hosted
+plugins execute in the app process; the automated Apple Audio Unit test does not
+prove every third-party plugin is compatible or crash-isolated.
 
 The Linux cloud machine validates portable DSP and native inference code. Native
 macOS UI evidence comes from a successful macOS workflow run, not Linux testing.

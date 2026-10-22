@@ -1,10 +1,13 @@
 #pragma once
 #include <juce_audio_utils/juce_audio_utils.h>
 #include "core/DSP.h"
+#include "workstation/WorkstationRuntime.h"
 #include <atomic>
 #include <memory>
 
 namespace samplify {
+
+class PluginHost;
 
 struct CueAssignment {
     int pad = -1;
@@ -59,6 +62,25 @@ public:
     float peakLevel() const;
     juce::String deviceName() const;
     juce::AudioDeviceManager& deviceManager() { return devices; }
+    void setWorkstationState(const WorkstationState&, bool restorePlugins = false);
+    void setWorkstationEnabled(bool enabled);
+    void playWorkstation(WorkstationPlayMode mode = WorkstationPlayMode::Arrangement);
+    void stopWorkstation();
+    void seekWorkstation(double beat);
+    void setPatternRecording(bool enabled);
+    void launchClip(int track, int scene);
+    void stopClipTrack(int track);
+    void setAudioAsset(WorkstationId id, std::shared_ptr<const AudioData>);
+    void removeAudioAsset(WorkstationId id);
+    WorkstationSnapshot workstationSnapshot() const;
+    bool popRecordedNote(RecordedWorkstationNote&);
+    void startMasterCapture(const juce::File& file);
+    void stopMasterCapture();
+    CaptureSnapshot captureSnapshot() const;
+    // Worker-thread offline freeze. Includes built-in track, send and master FX;
+    // third-party plug-ins are intentionally excluded, not cloned unsafely.
+    AudioData bouncePattern(int patternIndex, int track) const;
+    PluginHost& pluginHost();
     juce::String midiStatus() const;
     void refreshMidiInputs();
     void setKeyboardMode(bool enabled, int selectedPad);

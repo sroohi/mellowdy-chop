@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.28)
-project(Samplify VERSION 0.2.0 LANGUAGES C CXX)
+project(Samplify VERSION 0.3.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -11,6 +11,11 @@ endif()
 option(SAMPLIFY_BUILD_APP "Build the standalone desktop application" ON)
 option(SAMPLIFY_HIGH_QUALITY_STRETCH "Use native Rubber Band processing" ${SAMPLIFY_BUILD_APP})
 include(CTest)
+
+add_library(SamplifyWorkstationModel src/workstation/WorkstationModel.cpp)
+target_include_directories(SamplifyWorkstationModel PUBLIC src)
+add_library(SamplifyEffects src/dsp/Effects.cpp)
+target_link_libraries(SamplifyEffects PUBLIC SamplifyWorkstationModel)
 
 add_library(SamplifyCore src/core/Model.cpp src/core/DSP.cpp src/core/CueEditing.cpp)
 target_include_directories(SamplifyCore PUBLIC src)
@@ -24,6 +29,12 @@ else()
     target_compile_options(SamplifyCore PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 if(BUILD_TESTING)
+    add_executable(SamplifyWorkstationModelTests tests/workstation_model_tests.cpp)
+    target_link_libraries(SamplifyWorkstationModelTests PRIVATE SamplifyWorkstationModel)
+    add_test(NAME SamplifyWorkstationModelTests COMMAND SamplifyWorkstationModelTests)
+    add_executable(SamplifyEffectsTests tests/effects_tests.cpp)
+    target_link_libraries(SamplifyEffectsTests PRIVATE SamplifyEffects)
+    add_test(NAME SamplifyEffectsTests COMMAND SamplifyEffectsTests)
     add_executable(SamplifyCoreTests tests/core_tests.cpp)
     target_link_libraries(SamplifyCoreTests PRIVATE SamplifyCore)
     add_test(NAME SamplifyCoreTests COMMAND SamplifyCoreTests)
@@ -62,23 +73,35 @@ if(SAMPLIFY_BUILD_APP)
     target_sources(Samplify PRIVATE
         src/Main.cpp
         src/audio/AudioEngine.cpp
+        src/workstation/WorkstationRuntime.cpp
+        src/plugins/PluginHost.cpp
         src/audio/SessionIO.cpp
         src/audio/SeratoMetadata.cpp
         src/ui/MainComponent.cpp
+        src/ui/StudioComponent.cpp
+        src/ui/HardwareLookAndFeel.cpp
+        src/ui/WorkstationComponent.cpp
         src/ui/SourceWaveform.cpp)
     target_include_directories(Samplify PRIVATE src)
     target_compile_definitions(Samplify PRIVATE
+        JUCE_PLUGINHOST_VST3=1
+        JUCE_PLUGINHOST_AU=$<BOOL:${APPLE}>
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
         JUCE_DISPLAY_SPLASH_SCREEN=0
         JUCE_REPORT_APP_USAGE=0
         JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:Samplify,JUCE_PRODUCT_NAME>"
         JUCE_APPLICATION_VERSION_STRING="${PROJECT_VERSION}")
-    target_link_libraries(Samplify PRIVATE SamplifyCore SamplifyStems
+    target_link_libraries(Samplify PRIVATE SamplifyCore SamplifyStems SamplifyEffects
         juce::juce_audio_utils juce::juce_dsp
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags)
     samplify_add_stem_resources(Samplify)
+    configure_file("${juce_SOURCE_DIR}/modules/juce_audio_processors/format_types/VST3_SDK/LICENSE.txt"
+        "${CMAKE_BINARY_DIR}/VST3-SDK-LICENSE.txt" COPYONLY)
+    target_sources(Samplify PRIVATE "${CMAKE_BINARY_DIR}/VST3-SDK-LICENSE.txt")
+    set_source_files_properties("${CMAKE_BINARY_DIR}/VST3-SDK-LICENSE.txt"
+        PROPERTIES MACOSX_PACKAGE_LOCATION Resources/Licenses)
     configure_file("${samplifyrubberband_SOURCE_DIR}/COPYING" "${CMAKE_BINARY_DIR}/RubberBand-COPYING.txt" COPYONLY)
     target_sources(Samplify PRIVATE resources/THIRD_PARTY_NOTICES.md LICENSE "${CMAKE_BINARY_DIR}/RubberBand-COPYING.txt")
     set_source_files_properties(resources/THIRD_PARTY_NOTICES.md LICENSE "${CMAKE_BINARY_DIR}/RubberBand-COPYING.txt"
@@ -92,11 +115,12 @@ if(SAMPLIFY_BUILD_APP)
     if(BUILD_TESTING)
         juce_add_console_app(SamplifyIntegrationTests PRODUCT_NAME "SamplifyIntegrationTests")
         target_sources(SamplifyIntegrationTests PRIVATE tests/integration_tests.cpp
-            src/audio/AudioEngine.cpp src/audio/SessionIO.cpp)
+            src/audio/AudioEngine.cpp src/audio/SessionIO.cpp
+            src/workstation/WorkstationRuntime.cpp src/plugins/PluginHost.cpp)
         target_include_directories(SamplifyIntegrationTests PRIVATE src)
         target_compile_definitions(SamplifyIntegrationTests PRIVATE
-            JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
-        target_link_libraries(SamplifyIntegrationTests PRIVATE SamplifyCore
+            JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_PLUGINHOST_VST3=1 JUCE_PLUGINHOST_AU=$<BOOL:${APPLE}>)
+        target_link_libraries(SamplifyIntegrationTests PRIVATE SamplifyCore SamplifyEffects
             juce::juce_audio_utils juce::juce_dsp juce::juce_recommended_config_flags)
         if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             target_compile_definitions(SamplifyIntegrationTests PRIVATE SAMPLIFY_WRAP_C_ALLOCATIONS=1)
@@ -110,6 +134,27 @@ if(SAMPLIFY_BUILD_APP)
         target_compile_definitions(SamplifyMetadataTests PRIVATE JUCE_USE_CURL=0)
         target_link_libraries(SamplifyMetadataTests PRIVATE SamplifyCore juce::juce_core juce::juce_recommended_config_flags)
         add_test(NAME SamplifyMetadataTests COMMAND SamplifyMetadataTests)
+        foreach(testTarget SamplifyWorkstationAudioTests SamplifyPluginHostTests SamplifyWorkstationSessionTests)
+            juce_add_console_app(${testTarget} PRODUCT_NAME "${testTarget}")
+            target_include_directories(${testTarget} PRIVATE src)
+            target_compile_definitions(${testTarget} PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
+                JUCE_PLUGINHOST_VST3=1 JUCE_PLUGINHOST_AU=$<BOOL:${APPLE}>)
+            target_link_libraries(${testTarget} PRIVATE SamplifyCore SamplifyEffects
+                juce::juce_audio_utils juce::juce_dsp juce::juce_recommended_config_flags)
+            add_test(NAME ${testTarget} COMMAND ${testTarget})
+            set_tests_properties(${testTarget} PROPERTIES TIMEOUT 900)
+        endforeach()
+        target_sources(SamplifyWorkstationAudioTests PRIVATE tests/workstation_audio_tests.cpp
+            src/audio/AudioEngine.cpp src/audio/SessionIO.cpp
+            src/workstation/WorkstationRuntime.cpp src/plugins/PluginHost.cpp)
+        target_sources(SamplifyWorkstationSessionTests PRIVATE tests/workstation_session_tests.cpp src/audio/SessionIO.cpp)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            target_compile_definitions(SamplifyWorkstationAudioTests PRIVATE SAMPLIFY_WRAP_C_ALLOCATIONS=1)
+            target_link_options(SamplifyWorkstationAudioTests PRIVATE
+                -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free,--wrap=posix_memalign,--wrap=aligned_alloc)
+        endif()
+        target_compile_definitions(SamplifyPluginHostTests PRIVATE JUCE_MODAL_LOOPS_PERMITTED=1)
+        target_sources(SamplifyPluginHostTests PRIVATE tests/plugin_host_tests.cpp src/plugins/PluginHost.cpp)
         set_tests_properties(SamplifyIntegrationTests PROPERTIES TIMEOUT 900)
     endif()
 endif()

@@ -21,7 +21,24 @@ them.
 | M | [Miscellaneous: velocity, automation, undo/redo](https://support.serato.com/hc/en-us/articles/115003945934-Miscellaneous) |
 | L | [Loading a file](https://support.serato.com/hc/en-us/articles/115000489094-Loading-a-file) |
 
-## Visual and interaction structure
+## Version 0.3 presentation and workstation scope
+
+The user subsequently requested a beige MPC-style hardware interface with green
+LCDs, plus pattern recording, arrangement, effects and performance layers.
+Version 0.3 deliberately changes the visual presentation while retaining the
+source/cue interaction hierarchy below. Rubber pads use cue-color indicators;
+neutral parameter text follows the hardware palette. Studio routing replaces
+legacy device-pair routing in the app: live pads and source audition feed the
+selected mixer track, and scheduled clips carry an explicit destination. Options
+labels that control “Live sampler track.” Cue-level legacy output data remains
+readable for session compatibility and engine callers without the workstation.
+
+Sixteen single-lane patterns, eight arrangement tracks, four scenes, built-in
+and hosted effects, frozen audio assets, mixer controls and master-output
+recording extend the sampler beyond the reference. These features are described
+in [the workstation architecture](WORKSTATION_ARCHITECTURE.md) and README.
+
+## Reference visual and interaction structure
 
 Use the [annotated official screen](https://support.serato.com/hc/article_attachments/7728847814031)
 as the layout reference, rather than the previous sidebar/inspector design.
@@ -164,9 +181,9 @@ The original target remains a standalone macOS app. Host automation, DAW bus
 routing and vendor account/licensing UI are not directly transferable. Record
 explicit standalone adaptations instead of displaying nonfunctional substitutes.
 
-## Current implementation and verification status
+## Version 0.2 sampler baseline and verification history
 
-The current rebuild follows the documented source/cue workflow and replaces the
+The version 0.2 rebuild follows the documented source/cue workflow and replaces the
 earlier sidebar sampler layout. It includes source audition/seeking, the overview
 and detailed waveform, manual point/region cues, Hold/Trigger, 32-voice Poly,
 velocity, multi-selection, favorites, cue moves/copies, undo/redo, grid editing,

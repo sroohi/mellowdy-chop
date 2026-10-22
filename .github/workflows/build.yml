@@ -68,12 +68,18 @@ jobs:
 
           listing = subprocess.run(["ctest", "--test-dir", "build", "--build-config", "Release", "--show-only=json-v1"], check=True, capture_output=True, text=True)
           suites = {test["name"] for test in json.loads(listing.stdout)["tests"]}
-          required = {"SamplifyCoreTests", "SamplifyCueEditingTests", "SamplifyMetadataTests", "SamplifyStretchTests", "SamplifyStemTests", "SamplifyIntegrationTests"}
+          required = {
+              "SamplifyCoreTests", "SamplifyCueEditingTests", "SamplifyMetadataTests",
+              "SamplifyStretchTests", "SamplifyStemTests", "SamplifyIntegrationTests",
+              "SamplifyWorkstationModelTests", "SamplifyEffectsTests",
+              "SamplifyWorkstationAudioTests", "SamplifyWorkstationSessionTests",
+              "SamplifyPluginHostTests",
+          }
           if not required <= suites:
               raise SystemExit(f"Required test suites are missing: {sorted(required - suites)}")
           print("Required suites registered: " + ", ".join(sorted(required)))
           PY
-      - name: Run cue editing, metadata, Rubber Band, neural stems, audio, and session tests
+      - name: Run all sampler, workstation, effects, plugin-host, and session tests
         run: ctest --test-dir build --build-config Release --timeout 900 --output-on-failure
       - name: Verify universal executable
         run: |
@@ -143,11 +149,11 @@ jobs:
           summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
           if summary_path:
               with open(summary_path, "a") as summary:
-                  summary.write("### Native macOS controller and stem report\n\n```json\n" + report_json + "\n```\n")
-          for field in ("macOSRun", "demoAnalysedAndPadsRendered", "screenshotSaved", "blankScreenshotSaved", "stemSeparationCompleted"):
+                  summary.write("### Native macOS sampler, workstation, and stem report\n\n```json\n" + report_json + "\n```\n")
+          for field in ("macOSRun", "demoAnalysedAndPadsRendered", "screenshotSaved", "blankScreenshotSaved", "stemSeparationCompleted", "workstationScreenshotsSaved"):
               if report.get(field) is not True:
                   fail(f"Native app smoke test failed: {field} was not true. App error: {public_report['error']}")
-          for group, minimum in (("workflowChecks", 10), ("stemWorkflowChecks", 1)):
+          for group, minimum in (("workflowChecks", 10), ("stemWorkflowChecks", 1), ("workstationChecks", 10)):
               checks = report.get(group)
               if not isinstance(checks, dict) or len(checks) < minimum:
                   fail(f"Native app smoke report requires at least {minimum} named boolean checks in {group}.")
@@ -155,7 +161,8 @@ jobs:
               if failed:
                   fail(f"Native app controller checks failed in {group}: {failed}")
               print(f"Passed {len(checks)} native controller checks in {group}: {', '.join(sorted(checks))}")
-          for filename in ("Samplify.png", "Samplify-empty.png", "Samplify-compact.png"):
+          for filename in ("Samplify.png", "Samplify-empty.png", "Samplify-compact.png",
+                           "Samplify-arrange.png", "Samplify-patterns.png", "Samplify-fx.png", "Samplify-perform.png"):
               try:
                   image = (directory / filename).read_bytes()
               except OSError as error:
@@ -178,6 +185,10 @@ jobs:
             ${{ runner.temp }}/samplify-smoke/Samplify.png
             ${{ runner.temp }}/samplify-smoke/Samplify-empty.png
             ${{ runner.temp }}/samplify-smoke/Samplify-compact.png
+            ${{ runner.temp }}/samplify-smoke/Samplify-arrange.png
+            ${{ runner.temp }}/samplify-smoke/Samplify-patterns.png
+            ${{ runner.temp }}/samplify-smoke/Samplify-fx.png
+            ${{ runner.temp }}/samplify-smoke/Samplify-perform.png
             ${{ runner.temp }}/samplify-smoke/smoke.json
           if-no-files-found: warn
           retention-days: 30
@@ -226,24 +237,26 @@ jobs:
         run: |
           set -euo pipefail
           SHORT_SHA="${GITHUB_SHA:0:7}"
-          TAG="samplify-v0.2.0-$SHORT_SHA"
+          TAG="samplify-v0.3.0-$SHORT_SHA"
           cat > release-notes.md <<'NOTES'
-          Samplify 0.2.0 standalone development preview for macOS 12 and later, with universal Apple Silicon and Intel binaries. Its sampling workflow is informed by the Serato Sample 2.x manual; this independent app does not include Serato's proprietary processing or claim exact parity.
+          Samplify 0.3.0 standalone development preview for macOS 12 and later, with universal Apple Silicon and Intel binaries. Beige panels and green displays frame the sampler, pattern editor, eight-track arranger, effects presets, and performance/output-recording controls. Installed stereo Audio Unit and VST3 effects can be hosted on track and master inserts.
 
           Download the DMG and drag Samplify to Applications, or extract the app ZIP. The native four-stem HTDemucs model is bundled, and the app does not need Python, a separate model download, or an online account at runtime. Rubber Band supplies independent native pitch/time processing. SHA256SUMS.txt contains package and standalone-model checksums.
 
           This development build is ad-hoc signed. It is not Developer ID signed or notarized. macOS Gatekeeper may require explicit approval in Privacy & Security. Do not disable Gatekeeper globally.
 
-          The build passed core DSP, cue editing, metadata, Rubber Band, actual neural-stem inference, audio-rendering, and session test suites. It then launched the native macOS app, checked its empty load screen, exercised controller workflows, completed neural stem separation through the UI, and captured full/compact UI screenshots plus a checked JSON report. Samplify.png, Samplify-empty.png, Samplify-compact.png, and smoke.json provide the native evidence. These checks do not establish exact Serato parity. Hardware audio, MIDI input, musical quality, remaining interactive acceptance, and first-launch trust still require human testing on a Mac.
+          The build passed all eleven required suites covering the sampler, cue editing, metadata, Rubber Band, actual neural-stem inference, workstation model/audio/session behavior, built-in effects, and plugin-host behavior. On macOS, plugin-host checks also load and restore a real Apple Audio Unit. The native app then exercised sampler, stem, and workstation controller workflows and captured seven UI screenshots plus a checked JSON report. Every reported boolean check passed, including at least ten workstation checks.
+
+          The sampling workflow is informed by the Serato Sample 2.x manual and uses independent processing; this release does not claim exact Serato parity. No third-party plugins are bundled. Installed effects must match the running app architecture and satisfy macOS security and their own license requirements. Arbitrary third-party AU/VST3 compatibility, physical audio/MIDI hardware, musical quality, remaining interactive acceptance, and first-launch trust still need testing on a Mac.
 
           The separate ggml-model-htdemucs-4s-f16.bin asset supports source builds without PyTorch conversion, including on Intel Macs. Preserve its accompanying HTDemucs-model-provenance.json and HTDemucs-MIT.txt notices. Normal app users already have this model inside the app bundle.
           NOTES
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/Samplify-macOS-universal.zip dist/Samplify-macOS-universal.dmg dist/SHA256SUMS.txt dist/ggml-model-htdemucs-4s-f16.bin dist/HTDemucs-model-provenance.json dist/HTDemucs-MIT.txt dist/native-smoke/Samplify.png dist/native-smoke/Samplify-empty.png dist/native-smoke/Samplify-compact.png dist/native-smoke/smoke.json --clobber
+            gh release upload "$TAG" dist/Samplify-macOS-universal.zip dist/Samplify-macOS-universal.dmg dist/SHA256SUMS.txt dist/ggml-model-htdemucs-4s-f16.bin dist/HTDemucs-model-provenance.json dist/HTDemucs-MIT.txt dist/native-smoke/Samplify.png dist/native-smoke/Samplify-empty.png dist/native-smoke/Samplify-compact.png dist/native-smoke/Samplify-arrange.png dist/native-smoke/Samplify-patterns.png dist/native-smoke/Samplify-fx.png dist/native-smoke/Samplify-perform.png dist/native-smoke/smoke.json --clobber
           else
             gh release create "$TAG" \
               --target "$GITHUB_SHA" \
-              --title "Samplify 0.2.0 development preview ($SHORT_SHA)" \
+              --title "Samplify 0.3.0 development preview ($SHORT_SHA)" \
               --notes-file release-notes.md \
               --prerelease \
               dist/Samplify-macOS-universal.zip \
@@ -255,5 +268,9 @@ jobs:
               dist/native-smoke/Samplify.png \
               dist/native-smoke/Samplify-empty.png \
               dist/native-smoke/Samplify-compact.png \
+              dist/native-smoke/Samplify-arrange.png \
+              dist/native-smoke/Samplify-patterns.png \
+              dist/native-smoke/Samplify-fx.png \
+              dist/native-smoke/Samplify-perform.png \
               dist/native-smoke/smoke.json
           fi

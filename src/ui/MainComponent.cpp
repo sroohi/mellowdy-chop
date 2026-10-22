@@ -1,4 +1,5 @@
 #include "MainComponent.h"
+#include "HardwareLookAndFeel.h"
 #include "audio/SeratoMetadata.h"
 #include "stems/StemSeparator.h"
 #include <algorithm>
@@ -9,7 +10,7 @@
 
 namespace samplify {
 namespace {
-const juce::Colour black(0xff050505), top(0xff303030), strip(0xff424242), grey(0xff8e8e8e), white(0xffededed), yellow(0xffffd74b);
+const juce::Colour black(0xff29362b), top(0xffd6cbb5), strip(0xffbfb6a3), grey(0xff55584b), white(0xff393c34), yellow(0xffd78936);
 constexpr const char* stemNames[] { "VOCALS", "MELODY", "BASS", "DRUMS" };
 constexpr const char* typingKeys = "awsedftgyhujkolp";
 juce::Font face(float size, bool bold = false) { return juce::Font(juce::FontOptions(size, bold ? juce::Font::bold : juce::Font::plain)); }
@@ -39,59 +40,11 @@ int bitCount(std::uint32_t mask) { int n = 0; for (; mask; mask &= mask - 1) ++n
 void restoreGrid(Project& target, const Project& from) { target.sourceBpm = from.sourceBpm; target.tempoMarkers = from.tempoMarkers; target.beatgridEnabled = from.beatgridEnabled; }
 }
 
-class MainComponent::ReferenceLookAndFeel final : public juce::LookAndFeel_V4 {
+class MainComponent::ReferenceLookAndFeel final : public HardwareLookAndFeel {
 public:
-    ReferenceLookAndFeel() {
-        setColour(juce::Label::textColourId, white);
-        setColour(juce::TextButton::buttonColourId, juce::Colour(0xff292929));
-        setColour(juce::TextButton::buttonOnColourId, yellow);
-        setColour(juce::TextButton::textColourOffId, grey);
-        setColour(juce::TextButton::textColourOnId, juce::Colour(0xff282828));
-        setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff2a2a2a));
-        setColour(juce::ComboBox::textColourId, grey);
-        setColour(juce::ComboBox::outlineColourId, grey);
-        setColour(juce::PopupMenu::backgroundColourId, top);
-        setColour(juce::PopupMenu::textColourId, white);
-        setColour(juce::PopupMenu::highlightedBackgroundColourId, yellow);
-        setColour(juce::PopupMenu::highlightedTextColourId, black);
-        setColour(juce::Slider::textBoxTextColourId, white);
-        setColour(juce::Slider::textBoxBackgroundColourId, juce::Colour(0xff292929));
-        setColour(juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
-        setColour(juce::Slider::rotarySliderFillColourId, yellow);
-        setColour(juce::Slider::thumbColourId, yellow);
-        setColour(juce::TextEditor::textColourId, white);
-        setColour(juce::TextEditor::backgroundColourId, juce::Colour(0xff252525));
-        setColour(juce::ProgressBar::backgroundColourId, juce::Colour(0xff222222));
-        setColour(juce::ProgressBar::foregroundColourId, yellow);
-    }
-    juce::Font getTextButtonFont(juce::TextButton&, int h) override { return face(juce::jlimit(10.f, 17.f, h * .35f)); }
-    void drawButtonBackground(juce::Graphics& g, juce::Button& b, const juce::Colour& c, bool over, bool down) override {
-        const auto bounds = b.getLocalBounds().toFloat().reduced(.75f);
-        auto fill = b.getToggleState() ? b.findColour(juce::TextButton::buttonOnColourId) : c;
-        if (over || down) fill = fill.brighter(down ? .2f : .1f);
-        g.setColour(fill.withMultipliedAlpha(b.isEnabled() ? 1.f : .4f)); g.fillRoundedRectangle(bounds, 2);
-        if (b.getProperties().getWithDefault("outline", false)) {
-            g.setColour((b.getToggleState() ? yellow : grey).withMultipliedAlpha(b.isEnabled() ? 1.f : .3f));
-            g.drawRoundedRectangle(bounds, 2, 1.2f);
-        }
-    }
-    void drawRotarySlider(juce::Graphics& g, int x, int y, int width, int height, float pos, float start, float end, juce::Slider& s) override {
-        const float radius = std::max(1.f, std::min(width, height) * .41f);
-        const juce::Point<float> centre(x + width * .5f, y + height * .5f);
-        const auto bounds = juce::Rectangle<float>(radius * 2, radius * 2).withCentre(centre);
-        g.setColour(juce::Colour(0xff1f1f1f)); g.fillEllipse(bounds);
-        g.setColour(juce::Colour(0xff161616)); g.drawEllipse(bounds.reduced(3), 5);
-        g.setColour(juce::Colour(0xff363636)); g.fillEllipse(bounds.reduced(radius * .25f));
-        const float angle = start + pos * (end - start);
-        const auto p1 = centre.getPointOnCircumference(radius * .16f, angle);
-        const auto p2 = centre.getPointOnCircumference(radius * .9f, angle);
-        g.setColour(s.findColour(juce::Slider::rotarySliderFillColourId).withMultipliedAlpha(s.isEnabled() ? 1.f : .25f));
-        g.drawLine({ p1, p2 }, std::max(3.f, radius * .11f));
-        if (s.isMouseOverOrDragging()) referenceLabel(g, s.getTextFromValue(s.getValue()), bounds.reduced(0, radius * .25f), std::max(9.f, radius * .3f), white);
-    }
     void drawButtonText(juce::Graphics& g, juce::TextButton& b, bool over, bool down) override {
         const auto icon = b.getProperties().getWithDefault("icon", "").toString();
-        if (icon.isEmpty()) { juce::LookAndFeel_V4::drawButtonText(g, b, over, down); return; }
+        if (icon.isEmpty()) { HardwareLookAndFeel::drawButtonText(g, b, over, down); return; }
         const auto bounds = b.getLocalBounds().toFloat().reduced(b.getHeight() * .2f);
         const auto c = bounds.getCentre(); const float r = std::min(bounds.getWidth(), bounds.getHeight()) * .45f;
         g.setColour((b.getToggleState() ? b.findColour(juce::TextButton::textColourOnId) : b.findColour(juce::TextButton::textColourOffId)).withMultipliedAlpha(b.isEnabled() ? 1.f : .3f));
@@ -123,7 +76,7 @@ public:
             path.quadraticTo(c.x + direction * r * .7f, c.y - r, c.x - direction * r * .6f, c.y - r * .4f);
             g.strokePath(path, juce::PathStrokeType(2));
             path.clear(); path.addTriangle(c.x - direction * r * .85f, c.y - r * .35f, c.x - direction * r * .35f, c.y - r * .8f, c.x - direction * r * .25f, c.y); g.fillPath(path);
-        } else juce::LookAndFeel_V4::drawButtonText(g, b, over, down);
+        } else HardwareLookAndFeel::drawButtonText(g, b, over, down);
     }
 };
 
@@ -131,11 +84,11 @@ class ModeButton final : public juce::Button {
 public:
     ModeButton(juce::String first, juce::String second) : Button(first), upper(std::move(first)), lower(std::move(second)) { setClickingTogglesState(true); }
     void paintButton(juce::Graphics& g, bool over, bool) override {
-        g.setColour(juce::Colour(over ? 0xff353535 : 0xff2b2b2b)); g.fillRoundedRectangle(getLocalBounds().toFloat(), 2);
+        g.setColour(juce::Colour(over ? 0xffded6c5 : 0xffc5bcaa)); g.fillRoundedRectangle(getLocalBounds().toFloat(), 2);
         auto area = getLocalBounds().toFloat().reduced(3);
         const float fs = juce::jlimit(9.f, 17.f, getHeight() * .25f);
-        referenceLabel(g, upper, area.removeFromTop(area.getHeight() * .5f), fs, getToggleState() ? yellow : grey);
-        referenceLabel(g, lower, area, fs, getToggleState() ? grey : yellow);
+        referenceLabel(g, upper, area.removeFromTop(area.getHeight() * .5f), fs, getToggleState() ? black : grey);
+        referenceLabel(g, lower, area, fs, getToggleState() ? grey : black);
     }
 private:
     juce::String upper, lower;
@@ -145,8 +98,8 @@ class StemButton final : public juce::Button {
 public:
     explicit StemButton(int i) : Button(stemNames[i]), index(i) { setTooltip(juce::String(stemNames[i]) + ": click mute; Shift-click solo"); }
     void paintButton(juce::Graphics& g, bool over, bool) override {
-        g.setColour(juce::Colour(over ? 0xff393939 : 0xff2b2b2b)); g.fillRoundedRectangle(getLocalBounds().toFloat(), 2);
-        const auto colour = getToggleState() ? grey.withAlpha(.45f) : yellow;
+        g.setColour(juce::Colour(over ? 0xffded6c5 : 0xffc5bcaa)); g.fillRoundedRectangle(getLocalBounds().toFloat(), 2);
+        const auto colour = getToggleState() ? grey.withAlpha(.4f) : black;
         g.setColour(colour.withMultipliedAlpha(isEnabled() ? 1.f : .3f));
         const float w = static_cast<float>(getWidth()), h = static_cast<float>(getHeight());
         const float cx = w * .5f, cy = h * .43f, unit = std::min(w, h) * .34f;
@@ -183,20 +136,21 @@ public:
     std::function<void(int)> onRelease, onRename;
     std::function<void(int, int, bool)> onMove;
     void paint(juce::Graphics& g) override {
-        auto r = getLocalBounds().toFloat().reduced(1);
-        auto colour = pad.empty() ? juce::Colour(0xff343434) : juce::Colour(pad.colour);
-        if (active) colour = colour.brighter(.5f);
-        g.setColour(colour); g.fillRoundedRectangle(r, 3);
-        if (selected || dragOver) { g.setColour(white); g.drawRoundedRectangle(r.reduced(.8f), 3, dragOver ? 2.5f : 1.3f); }
-        const float fs = std::max(9.f, std::min(16.f, getHeight() * .24f));
-        if (pad.name.size()) referenceLabel(g, pad.name, r.reduced(8, 5).withTrimmedRight(29), fs, white, juce::Justification::centredLeft);
-        if (pad.favorite) { g.setColour(white.withAlpha(.7f)); juce::Path star; star.addStar({ 12.f, 12.f }, 5, 3.f, 6.f); g.fillPath(star); }
-        if (index < 16) {
-            const auto key = juce::String::charToString(typingKeys[index]).toUpperCase();
-            auto box = juce::Rectangle<float>(getWidth() - 29.f, getHeight() - 29.f, 22, 22);
-            g.setColour(white.withAlpha(pad.empty() ? .16f : .6f)); g.fillRoundedRectangle(box, 2);
-            referenceLabel(g, key, box, fs, pad.empty() ? grey : juce::Colour(pad.colour).darker(.25f));
-        }
+        const auto r = getLocalBounds().toFloat().reduced(2);
+        const auto cue = pad.empty() ? HardwareLookAndFeel::trim() : juce::Colour(pad.colour);
+        auto rubber = active ? juce::Colour(0xff646d5a) : juce::Colour(0xff474b43);
+        g.setColour(juce::Colour(0xff666557)); g.fillRoundedRectangle(r.translated(0, 2), 5);
+        g.setGradientFill(juce::ColourGradient(rubber.brighter(.12f), r.getX(), r.getY(), rubber.darker(.12f), r.getX(), r.getBottom(), false));
+        g.fillRoundedRectangle(r, 5);
+        g.setColour(juce::Colour(0xff252d25)); g.drawRoundedRectangle(r, 5, 1);
+        if (selected || dragOver) { g.setColour(HardwareLookAndFeel::amber()); g.drawRoundedRectangle(r.reduced(1), 4, dragOver ? 2.5f : 1.8f); }
+        g.setColour(cue.withAlpha(pad.empty() ? .3f : 1.f)); g.fillRoundedRectangle(r.getX() + 8, r.getY() + 7, 19, 3, 1);
+        const float fs = std::max(9.f, std::min(14.f, getHeight() * .22f));
+        const auto text = HardwareLookAndFeel::chassis().brighter(.14f);
+        referenceLabel(g, juce::String(index + 1).paddedLeft('0', 2), {r.getX() + 7, r.getY() + 12, 24, r.getHeight() - 16}, fs, text.withAlpha(.6f));
+        if (!pad.name.empty()) referenceLabel(g, pad.name, r.reduced(35, 5).withTrimmedRight(2), fs, text, juce::Justification::centredLeft);
+        if (pad.favorite) { g.setColour(HardwareLookAndFeel::amber()); juce::Path star; star.addStar({r.getRight() - 12, r.getY() + 10}, 5, 2.5f, 5); g.fillPath(star); }
+        if (index < 16) referenceLabel(g, juce::String::charToString(typingKeys[index]).toUpperCase(), {r.getRight() - 22, r.getBottom() - 23, 18, 18}, fs - 1, text.withAlpha(.65f));
     }
     void mouseDown(const juce::MouseEvent& e) override {
         dragging = false;
@@ -256,7 +210,7 @@ MainComponent::MainComponent() {
     for (auto* b : { &velocityButton, &quantizeButton, &syncButton, &pitchTimeButton, &reverseButton, &favoriteButton, &optionsButton, &keyboardButton, &metronome }) b->setClickingTogglesState(true);
     undoButton.setTooltip("Undo (Command-Z) - 100 actions"); redoButton.setTooltip("Redo (Command-Shift-Z)");
     velocityButton.setTooltip("Use MIDI note velocity"); quantizeButton.setTooltip("Snap new cue starts and ends to 1/8 beat");
-    pitchTimeButton.setTooltip("Independent pitch and time processing"); syncButton.setTooltip("Match current BPM to the project tempo in Audio settings");
+    pitchTimeButton.setTooltip("Independent pitch and time processing"); syncButton.setTooltip("Match source playback BPM to the studio tempo");
     playButton.setTooltip("Play / Pause source (Space)"); keyboardButton.setTooltip("Play the selected cue chromatically");
     autoSetButton.setTooltip("Populate cues using the selected Autoset mode; favorites are retained");
     reverseButton.setTooltip("Reverse selected cues"); favoriteButton.setTooltip("Protect selected cues from Autoset");
@@ -360,7 +314,7 @@ MainComponent::MainComponent() {
     sliceLeft.onClick = [this] { shiftSlicer(-1); }; sliceRight.onClick = [this] { shiftSlicer(1); };
     sliceSize.onChange = [this] { if (!refreshing) { constexpr double values[] { .0625, .125, .25, .5, 1, 2, 4, 8, 16 }; sliceBeats = values[juce::jlimit(0, 8, sliceSize.getSelectedId() - 1)]; if (autoMode == ChopMode::Grid) runAutoSet(true); } };
     keyStep.onChange = [this] { keyShiftStep = keyStep.getSelectedId(); };
-    outputRouting.onChange = [this] { if (!refreshing) { const int output = outputRouting.getSelectedId() - 1; editSelected([output](Pad& p) { p.outputChannel = output; }); } };
+    outputRouting.onChange = [this] { if (!refreshing) { const int output = outputRouting.getSelectedId() - 1; editSelected([output](Pad& p) { p.outputChannel = output; }); if (onStudioTrackChanged) onStudioTrackChanged(output); } };
     glideMode.onChange = [this] { if (!refreshing) editProject([this](Project& p) { p.glideMode = glideMode.getSelectedId() == 2 ? GlideMode::Sustain : GlideMode::Trigger; }); };
     overview.onSeek = [this](std::size_t frame) { engine.seekSource(frame); waveform.centreOn(frame); };
     waveform.onSeek = [this](std::size_t frame) { engine.seekSource(frame); };
@@ -387,7 +341,7 @@ MainComponent::MainComponent() {
     gridAdjustRight.onClick = [this] { applyGridBpm(std::min(300., project.sourceBpm + .1)); };
     gridSlipLeft.onClick = [this] { if (source) { const auto step = static_cast<std::size_t>(source->sampleRate * .001); gridDrag(step, 0, true); } };
     gridSlipRight.onClick = [this] { if (source) { const auto step = static_cast<std::size_t>(source->sampleRate * .001); gridDrag(0, step, true); } };
-    trackTitle.setFont(face(20)); trackInfo.setFont(face(13)); trackInfo.setColour(juce::Label::textColourId, grey);
+    trackTitle.setColour(juce::Label::textColourId, HardwareLookAndFeel::lcdInk()); trackTitle.setFont(face(20)); trackInfo.setFont(face(13)); trackInfo.setColour(juce::Label::textColourId, HardwareLookAndFeel::lcdInk());
     statusLabel.setFont(face(11)); statusLabel.setColour(juce::Label::textColourId, grey);
     progressBar = std::make_unique<juce::ProgressBar>(progressDisplay); addAndMakeVisible(*progressBar);
     audioWarning = engine.initialise(); engine.setMasterGain(.8f);
@@ -404,15 +358,13 @@ MainComponent::~MainComponent() {
 }
 
 void MainComponent::paint(juce::Graphics& g) {
-    g.fillAll(black);
+    g.fillAll(top);
     const float sx = getWidth() / 1600.f, sy = getHeight() / 1184.f;
     auto rect = [sx, sy](float x, float y, float w, float h) { return juce::Rectangle<float>(x * sx, y * sy, w * sx, h * sy); };
     g.setColour(top); g.fillRect(rect(0, 0, 1600, 76));
-    const auto brand = rect(590, 8, 420, 60);
-    g.setColour(yellow); g.fillEllipse(brand.getX(), brand.getCentreY() - 18 * sy, 36 * sy, 36 * sy);
-    referenceLabel(g, "S", { brand.getX(), brand.getCentreY() - 18 * sy, 36 * sy, 36 * sy }, 26 * sy, black);
-    referenceLabel(g, "SAMPLIFY", brand.withTrimmedLeft(47 * sy).withTrimmedRight(100 * sx), std::max(14.f, 29 * sy), white, juce::Justification::centredLeft);
-    referenceLabel(g, "MP AUDIO", brand.withTrimmedLeft(270 * sx), std::max(8.f, 13 * sy), grey, juce::Justification::centredLeft);
+    referenceLabel(g, "SOURCE / CHOP / STEMS", rect(485, 14, 630, 47), std::max(13.f, 21 * sy), black);
+    HardwareLookAndFeel::paintScrew(g, { 180 * sx, 37 * sy }, 4 * sy);
+    HardwareLookAndFeel::paintScrew(g, { 1320 * sx, 37 * sy }, 4 * sy);
     const bool loaded = source && source->frames() > 0;
     if (!loaded) {
         if (!busy) {
@@ -424,10 +376,11 @@ void MainComponent::paint(juce::Graphics& g) {
         return;
     }
     g.setColour(strip); g.fillRect(rect(0, 76, 1600, 96));
-    g.setColour(juce::Colour(0xff292929)); g.fillRoundedRectangle(rect(526, 94, 385, 65), 2);
+    HardwareLookAndFeel::paintLCD(g, rect(526, 88, 385, 78));
     g.setColour(strip); g.fillRect(rect(0, 612, 1600, 166));
-    g.setColour(juce::Colour(0xff292929)); g.fillRect(rect(0, 778, 1600, 406));
-    g.setColour(juce::Colour(0xff555555)); g.drawHorizontalLine(static_cast<int>(612 * sy), 0, static_cast<float>(getWidth()));
+    HardwareLookAndFeel::paintBezel(g, rect(4, 778, 1592, 382));
+    HardwareLookAndFeel::paintLCD(g, rect(8, 180, 1584, 424));
+    g.setColour(HardwareLookAndFeel::trim()); g.drawHorizontalLine(static_cast<int>(612 * sy), 0, static_cast<float>(getWidth()));
     g.drawHorizontalLine(static_cast<int>(778 * sy), 0, static_cast<float>(getWidth()));
     if (!gridEditing && !optionsOpen) {
         referenceLabel(g, "Reverse", rect(720, 724, 145, 32), std::max(10.f, 18 * sy));
@@ -440,7 +393,7 @@ void MainComponent::paint(juce::Graphics& g) {
         referenceLabel(g, "BPM", rect(12, 628, 198, 24), std::max(10.f, 15 * sy), grey, juce::Justification::centredLeft);
     }
     if (busy) {
-        g.setColour(black.withAlpha(.82f)); g.fillRect(rect(0, 172, 1600, 440));
+        g.setColour(top.withAlpha(.92f)); g.fillRect(rect(0, 172, 1600, 440));
         referenceLabel(g, status, rect(260, 322, 1080, 55), std::max(12.f, 20 * sy), white);
     }
 }
@@ -561,7 +514,7 @@ void MainComponent::refreshControls() {
     for (auto* c : std::initializer_list<juce::Component*> { &optionsInfo, &outputRouting, &outputLabel }) { c->setVisible(loaded && !gridEditing && optionsOpen); c->setEnabled(cueSelected && !busy); }
     optionsInfo.setText(bitCount(mask) > 1 ? "Multiple Cues selected" : "Pad " + juce::String(selectedPad + 1) + "  /  " + noteName(selectedPad), juce::dontSendNotification);
     optionsInfo.setFont(face(21)); optionsInfo.setColour(juce::Label::textColourId, grey);
-    outputRouting.setSelectedId(static_cast<int>(common([](const Pad& p) { return p.outputChannel; }, 0)) + 1, juce::dontSendNotification);
+    outputRouting.setSelectedId(onReadStudioTrack ? onReadStudioTrack() + 1 : static_cast<int>(common([](const Pad& p) { return p.outputChannel; }, 0)) + 1, juce::dontSendNotification);
     for (int i = 0; i < 4; ++i) {
         bool muted = project.stemMute[static_cast<std::size_t>(i)];
         if (mask) muted = muted || common([i](const Pad& p) { return p.stemMute[static_cast<std::size_t>(i)] ? 1 : 0; }, 0) == 1;
@@ -777,6 +730,7 @@ void MainComponent::loadSource(const juce::File& file, std::optional<Session> re
         engine.setLiveProject(updated); taskProgress.store(1);
         return Completion([this, input, a = std::move(a), updated, file, paths, imported, dj, restored, regenerateStems]() mutable {
             installSource(input, std::move(a), updated, file, paths, imported); importedCues = dj;
+            if (restored && onRestoreWorkstationState) onRestoreWorkstationState(restored->workstation);
             status = restored && restored->migrationNotice.isNotEmpty() ? juce::String(restored->migrationNotice) : "Source ready - click a pad to create a Cue at the playhead";
             refreshControls();
             if (regenerateStems) { status = "Cached stems missing - regenerating while retaining Cue settings"; separateStems(); }
@@ -1028,7 +982,29 @@ void MainComponent::tapTempo() {
     if (tapTimes.size() >= 2) { const double interval = (tapTimes.back() - tapTimes.front()) / (tapTimes.size() - 1); applyGridBpm(std::clamp(60000. / interval, 30., 300.)); }
 }
 
-Session MainComponent::currentSession() const { return { project, sourceFile, stemFiles, {} }; }
+void MainComponent::configureStudioRouting(std::function<int()> read, std::function<void(int)> change) {
+    onReadStudioTrack = std::move(read); onStudioTrackChanged = std::move(change);
+    outputRouting.clear(juce::dontSendNotification);
+    for (int i = 0; i < 8; ++i) outputRouting.addItem("Studio Track " + juce::String(i + 1), i + 1);
+    outputLabel.setText("Live sampler track", juce::dontSendNotification);
+    outputRouting.setTooltip("Route live pads and source audition to this studio mixer track. Pattern and arrangement clips use their own destination track.");
+    refreshStudioRouting();
+}
+void MainComponent::refreshStudioRouting() {
+    if (onReadStudioTrack) outputRouting.setSelectedId(onReadStudioTrack() + 1, juce::dontSendNotification);
+}
+
+void MainComponent::setStudioTempo(double bpm) {
+    if (!std::isfinite(bpm) || std::abs(hostBpm - bpm) < .0001) return;
+    hostBpm = std::clamp(bpm, 30., 300.);
+    if (project.syncTempo) { project.projectBpm = hostBpm; engine.setLiveProject(project); refreshControls(); }
+}
+
+Session MainComponent::currentSession() const {
+    Session result { project, sourceFile, stemFiles, {} };
+    if (onReadWorkstationState) result.workstation = onReadWorkstationState();
+    return result;
+}
 void MainComponent::openSession() {
     if (busy) return;
     chooser = std::make_unique<juce::FileChooser>("Open Samplify session", juce::File(), "*.samplify");
@@ -1037,11 +1013,11 @@ void MainComponent::openSession() {
 }
 void MainComponent::saveSession() {
     if (busy || !source) return;
-    chooser = std::make_unique<juce::FileChooser>("Save session - references source and cached stems", sourceFile.withFileExtension("samplify"), "*.samplify");
+    chooser = std::make_unique<juce::FileChooser>("Save sampler, patterns, arrangement, mixer and effects", sourceFile.withFileExtension("samplify"), "*.samplify");
     auto safe = juce::Component::SafePointer<MainComponent>(this);
     chooser->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting, [safe](const juce::FileChooser& c) {
         if (!safe || c.getResult() == juce::File()) return;
-        try { samplify::saveSession(c.getResult().withFileExtension("samplify"), safe->currentSession()); safe->status = "Session saved - keep the source and cached stem files available"; safe->refreshControls(); }
+        try { samplify::saveSession(c.getResult().withFileExtension("samplify"), safe->currentSession()); safe->status = "Studio session saved - keep source, stems and audio assets available"; safe->refreshControls(); }
         catch (const std::exception& e) { safe->reportError(e.what()); }
     });
 }
@@ -1079,7 +1055,7 @@ public:
     AudioSettingsPanel(juce::AudioDeviceManager& manager, double bpm, std::function<void(double)> change)
         : devices(manager, 0, 0, 0, 64, true, false, true, false) {
         addAndMakeVisible(devices); addAndMakeVisible(label); addAndMakeVisible(tempo);
-        label.setText("Standalone host tempo", juce::dontSendNotification);
+        label.setText("Studio tempo", juce::dontSendNotification);
         tempo.setRange(30, 300, .01); tempo.setSliderStyle(juce::Slider::LinearHorizontal); tempo.setTextBoxStyle(juce::Slider::TextBoxRight, false, 90, 28); tempo.setValue(bpm, juce::dontSendNotification);
         tempo.onValueChange = [this, change] { change(tempo.getValue()); };
         setSize(590, 550);
@@ -1092,11 +1068,11 @@ void MainComponent::showAudioSettings() {
     if (busy) return;
     engine.refreshMidiInputs();
     auto safe = juce::Component::SafePointer<MainComponent>(this);
-    auto content = std::make_unique<AudioSettingsPanel>(engine.deviceManager(), hostBpm, [safe](double value) { if (safe) { safe->hostBpm = value; if (safe->project.syncTempo) safe->editProject([value](Project& p) { p.projectBpm = value; }); } });
+    auto content = std::make_unique<AudioSettingsPanel>(engine.deviceManager(), hostBpm, [safe](double value) { if (safe) { safe->hostBpm = value; if (safe->onHostTempoChanged) safe->onHostTempoChanged(value); if (safe->project.syncTempo) safe->editProject([value](Project& p) { p.projectBpm = value; }); } });
     juce::DialogWindow::LaunchOptions options; options.content.setOwned(content.release()); options.dialogTitle = "Samplify - Audio / MIDI"; options.dialogBackgroundColour = top;
     options.componentToCentreAround = this; options.useNativeTitleBar = true; options.resizable = false; options.escapeKeyTriggersCloseButton = true; options.launchAsync();
 }
-void MainComponent::stopPlayback() { engine.stop(); engine.pauseSource(); heldKeys.clear(); status = "Playback stopped"; statusLabel.setText(status, juce::dontSendNotification); }
+void MainComponent::stopPlayback() { engine.stopWorkstation(); engine.stop(); engine.pauseSource(); heldKeys.clear(); status = "Playback stopped"; statusLabel.setText(status, juce::dontSendNotification); }
 bool MainComponent::isReadyForSmokeTest() const { return !busy && source && source->frames() > 0 && !analysis.waveform.empty(); }
 
 void MainComponent::timerCallback() {

@@ -1,4 +1,5 @@
 #include "SourceWaveform.h"
+#include "HardwareLookAndFeel.h"
 #include "core/CueEditing.h"
 
 #include <algorithm>
@@ -7,8 +8,8 @@
 
 namespace samplify {
 namespace {
-const auto background = juce::Colour(0xff050505);
-const auto subdued = juce::Colour(0xff939393);
+const auto background = HardwareLookAndFeel::lcd();
+const auto subdued = HardwareLookAndFeel::lcdInk().withAlpha(.7f);
 
 juce::Colour cueColourFor(const Pad& cue) {
     auto colour = juce::Colour(cue.colour);
@@ -17,10 +18,8 @@ juce::Colour cueColourFor(const Pad& cue) {
 
 juce::Colour spectralColour(const WaveformBin& bin) {
     const auto total = std::max(.00001f, bin.low + bin.mid + bin.high);
-    return juce::Colour::fromFloatRGBA(
-        std::clamp(std::sqrt(std::max(0.f, bin.low / total)) * 1.35f, .13f, 1.f),
-        std::clamp(std::sqrt(std::max(0.f, bin.mid / total)) * 1.35f, .13f, 1.f),
-        std::clamp(std::sqrt(std::max(0.f, bin.high / total)) * 1.6f, .13f, 1.f), 1.f);
+    const auto brightness = std::clamp((bin.high + .5f * bin.mid) / total, 0.f, 1.f);
+    return HardwareLookAndFeel::lcdInk().interpolatedWith(juce::Colour(0xff46674b), brightness);
 }
 
 std::size_t boundedFrame(double value, std::size_t maximum) {
@@ -38,9 +37,9 @@ SourceWaveform::SourceWaveform(bool fullFile) : overview(fullFile) {
         for (auto* button : { &plusButton, &minusButton, &freezeButton, &gridButton }) {
             addChildComponent(*button);
             button->setWantsKeyboardFocus(false);
-            button->setColour(juce::TextButton::buttonColourId, juce::Colour(0xdd333333));
-            button->setColour(juce::TextButton::textColourOffId, juce::Colour(0xffb5b5b5));
-            button->setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xff6e643d));
+            button->setColour(juce::TextButton::buttonColourId, HardwareLookAndFeel::chassis());
+            button->setColour(juce::TextButton::textColourOffId, HardwareLookAndFeel::ink());
+            button->setColour(juce::TextButton::buttonOnColourId, HardwareLookAndFeel::amber());
         }
         plusButton.setTooltip("Zoom into the source waveform");
         minusButton.setTooltip("Zoom out of the source waveform");
@@ -255,7 +254,7 @@ void SourceWaveform::paint(juce::Graphics& g) {
         if (x < plot.getX() || x > plot.getRight() || x - lastBeatX < 1.5f) continue;
         lastBeatX = x;
         const bool bar = index % 4 == 0;
-        g.setColour(juce::Colours::white.withAlpha(gridEdit ? (bar ? .42f : .29f) : (bar ? .11f : .06f)));
+        g.setColour(HardwareLookAndFeel::lcdInk().withAlpha(gridEdit ? (bar ? .42f : .29f) : (bar ? .18f : .09f)));
         if (bar || overview) g.drawVerticalLine(static_cast<int>(x), plot.getY(), plot.getBottom());
         else {
             g.drawLine(x, plot.getY(), x, plot.getY() + 13, 1);
@@ -322,7 +321,7 @@ void SourceWaveform::paint(juce::Graphics& g) {
 
     const auto playhead = xAt(playback.sourceFrame);
     if (playhead >= plot.getX() && playhead <= plot.getRight()) {
-        g.setColour(juce::Colours::white);
+        g.setColour(HardwareLookAndFeel::lcdInk());
         g.drawLine(playhead, plot.getY(), playhead, plot.getBottom(), overview ? 1.5f : 3.f);
     }
 }

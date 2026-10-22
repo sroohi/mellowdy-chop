@@ -1,5 +1,7 @@
 #include "AudioEngine.h"
 #include "dsp/RubberBandProcessor.h"
+#include "dsp/Effects.h"
+#include "plugins/PluginHost.h"
 #include <rubberband/RubberBandStretcher.h>
 #if JUCE_MAC
 #include <AudioToolbox/AudioToolbox.h>
@@ -11,6 +13,8 @@
 #include <cstdint>
 #include <limits>
 #include <mutex>
+#include <thread>
+#include <chrono>
 #include <stdexcept>
 #include <vector>
 
@@ -29,6 +33,91 @@ constexpr std::size_t processFrames = 512;
 constexpr std::size_t retrieveFrames = 2048;
 constexpr double pi = 3.14159265358979323846;
 using Stretcher = RubberBand::RubberBandStretcher;
+
+// The callback only copies stereo samples into this bounded ring. Opening,
+// encoding, WAV-header finalization and transactional replacement stay on the
+// control/writer threads. A full ring stops capture and reports the lost take.
+class MasterCapture {
+public:
+    MasterCapture() : worker([this] { run(); }) {}
+    ~MasterCapture() {
+        accepting.store(false); finalizing.store(true); finalizeRequested.store(true);
+        quitting.store(true); if (worker.joinable()) worker.join();
+    }
+    void start(const juce::File& file, double rate) {
+        const std::lock_guard<std::mutex> lock(writerMutex);
+        if (recording.load() || finalizing.load() || writer) throw std::runtime_error("Stop the current master recording before starting another.");
+        temporary = std::make_unique<juce::TemporaryFile>(file);
+        auto stream = temporary->getFile().createOutputStream();
+        if (!stream || !stream->openedOk()) { temporary.reset(); error.store(CaptureError::OpenFailed); throw std::runtime_error("The master recording file could not be opened."); }
+        juce::WavAudioFormat format;
+        writer.reset(format.createWriterFor(stream.get(), rate, 2, 32, {}, 0));
+        if (!writer) { temporary.reset(); error.store(CaptureError::OpenFailed); throw std::runtime_error("The float WAV recording encoder could not be created."); }
+        stream.release();
+        readPosition.store(0); writePosition.store(0); frames.store(0);
+        error.store(CaptureError::None); overflow.store(false); finalizeRequested.store(false);
+        recording.store(true); accepting.store(false);
+    }
+    void activate() noexcept { if (recording.load() && !finalizeRequested.load()) accepting.store(true); }
+    void stop() noexcept {
+        accepting.store(false);
+        if (recording.load()) { finalizing.store(true); if (recording.exchange(false)) finalizeRequested.store(true); }
+    }
+    void push(float left, float right) noexcept {
+        if (!accepting.load(std::memory_order_relaxed)) return;
+        producers.fetch_add(1);
+        if (!accepting.load()) { producers.fetch_sub(1); return; }
+        const auto write = writePosition.load(std::memory_order_relaxed);
+        if (write - readPosition.load(std::memory_order_acquire) >= capacity) {
+            overflow.store(true); error.store(CaptureError::Overflow); stop(); producers.fetch_sub(1); return;
+        }
+        samples[static_cast<std::size_t>(write % capacity)] = { left, right };
+        writePosition.store(write + 1, std::memory_order_release); frames.fetch_add(1, std::memory_order_relaxed);
+        producers.fetch_sub(1);
+    }
+    CaptureSnapshot snapshot() const { return { recording.load(), finalizing.load(), overflow.load(), frames.load(), error.load() }; }
+private:
+    static constexpr std::uint64_t capacity = 262144;
+    std::array<std::array<float, 2>, capacity> samples {};
+    std::atomic<std::uint64_t> readPosition { 0 }, writePosition { 0 }, frames { 0 };
+    std::atomic<bool> accepting { false }, recording { false }, finalizing { false }, finalizeRequested { false }, overflow { false }, quitting { false };
+    std::atomic<CaptureError> error { CaptureError::None };
+    std::atomic<int> producers { 0 };
+    std::mutex writerMutex;
+    std::unique_ptr<juce::TemporaryFile> temporary;
+    std::unique_ptr<juce::AudioFormatWriter> writer;
+    std::thread worker;
+    void run() {
+        juce::AudioBuffer<float> block(2, 8192);
+        for (;;) {
+            {
+                const std::lock_guard<std::mutex> lock(writerMutex);
+                auto read = readPosition.load(std::memory_order_relaxed);
+                const auto write = writePosition.load(std::memory_order_acquire);
+                const auto count = static_cast<int>(std::min<std::uint64_t>(8192, write - read));
+                if (writer && count > 0) {
+                    for (int sample = 0; sample < count; ++sample) {
+                        const auto& value = samples[static_cast<std::size_t>((read + static_cast<std::uint64_t>(sample)) % capacity)];
+                        block.setSample(0, sample, value[0]); block.setSample(1, sample, value[1]);
+                    }
+                    if (!writer->writeFromAudioSampleBuffer(block, 0, count)) { error.store(CaptureError::DiskWriteFailed); stop(); }
+                    read += static_cast<std::uint64_t>(count); readPosition.store(read, std::memory_order_release);
+                }
+                if (finalizeRequested.load() && producers.load() == 0 && read == writePosition.load(std::memory_order_acquire)) {
+                    writer.reset();
+                    if (temporary) {
+                        if (frames.load() == 0 && error.load() == CaptureError::None) error.store(CaptureError::EmptyRecording);
+                        if (error.load() == CaptureError::None && !temporary->overwriteTargetFileWithTemporary()) error.store(CaptureError::DiskWriteFailed);
+                        temporary.reset();
+                    }
+                    recording.store(false); finalizeRequested.store(false); finalizing.store(false);
+                }
+                if (quitting.load() && !writer) return;
+            }
+            if (readPosition.load() == writePosition.load()) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    }
+};
 
 float finiteGain(float gain) { return std::isfinite(gain) ? std::clamp(gain, 0.0f, 4.0f) : 0.0f; }
 float bounded(float value, float low, float high, float fallback) {
@@ -171,6 +260,8 @@ AudioData renderSelection(const std::shared_ptr<const AudioData>& source,
     pad.detuneCents += project.globalDetuneCents;
     if (project.syncKey) pad.pitchSemitones += static_cast<float>(keySemitoneOffset(project.sourceKey, project.projectKey));
     const double pitch = std::clamp(static_cast<double>(pad.pitchSemitones + pad.detuneCents / 100.0f), -60.0, 60.0);
+    pad.pitchSemitones = static_cast<float>(pitch);
+    pad.detuneCents = 0;
     const float attackMs = bounded(pad.attackMs, 0, 10000, 0);
     const float releaseMs = bounded(pad.releaseMs, 0, 10000, 0);
     // The core renderer has a conventional end fade. Performance mode envelopes
@@ -255,14 +346,21 @@ struct AudioEngine::Impl {
         bool processorReady = false, processedLast = false;
         std::uint8_t mixMask = 0;
         std::array<float, 2> filterState {};
+        int track = -1;
+        bool sequenced = false;
+        std::uint64_t sequenceToken = 0;
     };
-    enum class CommandType { Trigger, Release, Stop, PlaySource, PauseSource, SeekSource };
+    enum class CommandType { Trigger, Release, Stop, PlaySource, PauseSource, SeekSource, Workstation, CaptureStart, CaptureStop };
     struct Command {
         CommandType type = CommandType::Stop;
         int index = -1;
         float note = 0, velocity = 1;
         bool exactPitch = false;
         std::size_t frame = 0;
+        WorkstationControl workstation;
+        int track = -1;
+        bool sequenced = false;
+        std::uint64_t sequenceToken = 0;
     };
 
     std::mutex sourceMutex, publicationMutex;
@@ -307,6 +405,15 @@ struct AudioEngine::Impl {
     std::array<Command, commandCapacity> commands;
     std::mutex producerMutex;
     bool connected = false;
+    WorkstationRuntime workstation;
+    PluginHost plugins;
+    MasterCapture capture;
+    std::array<FxRack, 11> effects;
+    std::array<juce::AudioBuffer<float>, 11> buses;
+    std::vector<float> masterEnvelope;
+    std::size_t maximumBlock = 0;
+    std::array<float, 8> trackLeftGain { 1, 1, 1, 1, 1, 1, 1, 1 }, trackRightGain { 1, 1, 1, 1, 1, 1, 1, 1 };
+    std::array<std::array<std::uint64_t, 97>, 32> recordingIds {};
 
     Impl() {
         for (int note = 0; note < 128; ++note) {
@@ -515,7 +622,12 @@ struct AudioEngine::Impl {
         displayFrame.store(static_cast<std::size_t>(voice.position));
     }
     void applyCommand(const Command& command, const Bank* bank) {
+        if (command.type == CommandType::Workstation) { workstation.applyControl(command.workstation); return; }
+        if (command.type == CommandType::CaptureStart) { capture.activate(); return; }
+        if (command.type == CommandType::CaptureStop) { capture.stop(); return; }
         if (command.type == CommandType::Stop) {
+            workstation.finishRecordingNotes();
+            for (auto& padIds : recordingIds) padIds.fill(0);
             lastTriggeredPad.store(-1);
             assignmentCancellation.fetch_add(1);
             pendingCueHeld.store(false);
@@ -544,6 +656,13 @@ struct AudioEngine::Impl {
             return;
         }
         if (command.type == CommandType::Release) {
+            if (!command.sequenced && command.index >= 0 && command.index < 32) {
+                auto& ids = recordingIds[static_cast<std::size_t>(command.index)];
+                for (std::size_t pitch = 0; pitch < ids.size(); ++pitch) {
+                    if (command.exactPitch && pitch != static_cast<std::size_t>(std::clamp(static_cast<int>(std::lround(command.note)) + 48, 0, 96))) continue;
+                    if (ids[pitch]) { workstation.recordNoteOff(ids[pitch]); ids[pitch] = 0; }
+                }
+            }
             if (command.index >= 0 && command.index < 32) {
                 auto& padHolds = pendingHolds[static_cast<std::size_t>(command.index)];
                 if (command.exactPitch && std::isfinite(command.note))
@@ -555,9 +674,13 @@ struct AudioEngine::Impl {
                 pendingCueHeld.store(false);
             for (int slot = 0; slot < voiceLimit; ++slot) {
                 auto& voice = voices[static_cast<std::size_t>(slot)];
-                if (!voice.bank || voice.pad != command.index) continue;
+                if (!voice.bank || voice.sequenced != command.sequenced) continue;
+                if (command.sequenced) {
+                    if (voice.track != command.track || (command.index >= 0 && voice.sequenceToken != command.sequenceToken)) continue;
+                } else if (voice.pad != command.index) continue;
                 if (command.exactPitch && std::abs(voice.note - command.note) >= .01f) continue;
                 voice.held = false;
+                if (command.sequenced && command.index < 0) { beginRelease(voice, 5); continue; }
                 if (voice.bank->project.playbackMode == CuePlaybackMode::Trigger) continue;
                 if (voice.atEnd) finishVoice(slot, true);
                 else beginRelease(voice, bounded(padFor(voice).releaseMs, 0, 10000, 0));
@@ -567,6 +690,7 @@ struct AudioEngine::Impl {
         if (!bank || !bank->source || command.index < 0 || command.index >= 32) return;
         const auto& pad = bank->project.pads[static_cast<std::size_t>(command.index)];
         if (pad.empty() || pad.start >= bank->source->frames()) {
+            if (command.sequenced) return;
             pendingCuePad.store(command.index);
             pendingCueFrame.store(std::min(displayFrame.load(), bank->source->frames() - 1));
             pendingCueVelocity.store(command.velocity); pendingCueSemitoneOffset.store(command.note); pendingCueHeld.store(true);
@@ -583,11 +707,12 @@ struct AudioEngine::Impl {
             pendingCueSerial.fetch_add(1, std::memory_order_release);
             return;
         }
+        const int track = workstation.enabled() ? (command.track >= 0 ? command.track : workstation.selectedTrack()) : -1;
         int previous = -1;
         if (mono.load()) {
             for (int slot = 0; slot < voiceLimit; ++slot) {
                 const auto& voice = voices[static_cast<std::size_t>(slot)];
-                if (voice.bank && voice.held && !voice.atEnd
+                if (voice.bank && voice.held && !voice.atEnd && (!workstation.enabled() || voice.track == track)
                     && (!voice.releasing || voice.bank->project.playbackMode == CuePlaybackMode::Trigger)
                     && (previous < 0 || voice.serial > voices[static_cast<std::size_t>(previous)].serial)) previous = slot;
             }
@@ -604,6 +729,8 @@ struct AudioEngine::Impl {
             voice.glideStep = (voice.targetPitch - voice.currentPitch) / static_cast<double>(std::max<std::uint64_t>(1, voice.glideRemaining));
             voice.velocity = command.velocity;
             voice.serial = ++serial;
+            voice.sequenced = command.sequenced; voice.sequenceToken = command.sequenceToken; voice.track = track;
+            recordInput(command, voice);
             displayedSerial = voice.serial;
             displayAudition = false;
             lastTriggeredPad.store(command.index);
@@ -611,7 +738,7 @@ struct AudioEngine::Impl {
             return;
         }
         const double initialPitch = glide ? voices[static_cast<std::size_t>(previous)].currentPitch : command.note;
-        if (mono.load()) for (auto& voice : voices) if (voice.bank && !voice.audition) beginRelease(voice, 5);
+        if (mono.load()) for (auto& voice : voices) if (voice.bank && !voice.audition && (!workstation.enabled() || voice.track == track)) beginRelease(voice, 5);
         int slot = -1;
         for (int candidate = 0; candidate < voiceLimit; ++candidate) if (!voices[static_cast<std::size_t>(candidate)].bank) { slot = candidate; break; }
         if (slot < 0) {
@@ -625,6 +752,8 @@ struct AudioEngine::Impl {
         voice.position = pad.reverse ? static_cast<double>(std::min(pad.end, bank->source->frames()) - 1) : static_cast<double>(pad.start);
         voice.inputPosition = voice.position; voice.currentPitch = initialPitch; voice.targetPitch = command.note;
         voice.mixMask = maskFor(voice); voice.serial = ++serial;
+        voice.track = track; voice.sequenced = command.sequenced; voice.sequenceToken = command.sequenceToken;
+        recordInput(command, voice);
         if (glide) {
             voice.glideRemaining = static_cast<std::uint64_t>(bounded(bank->project.glideMs, .01f, 5000.f, .01f) * outputRate / 1000);
             voice.glideStep = (voice.targetPitch - voice.currentPitch) / static_cast<double>(std::max<std::uint64_t>(1, voice.glideRemaining));
@@ -635,6 +764,13 @@ struct AudioEngine::Impl {
         lastTriggeredPad.store(command.index);
         triggerSerial.fetch_add(1);
         displayFrame.store(static_cast<std::size_t>(voice.position));
+    }
+    void recordInput(const Command& command, const Voice& voice) {
+        if (command.sequenced || !workstation.enabled()) return;
+        auto& id = recordingIds[static_cast<std::size_t>(command.index)][static_cast<std::size_t>(std::clamp(static_cast<int>(std::lround(command.note)) + 48, 0, 96))];
+        if (id) workstation.recordNoteOff(id);
+        id = voice.serial;
+        workstation.recordNoteOn(id, voice.track, command.index, command.note, command.velocity);
     }
 };
 
@@ -841,12 +977,185 @@ AudioData AudioEngine::renderForExport(const Project& project, int padIndex) con
     { const std::lock_guard<std::mutex> lock(impl->sourceMutex); source = impl->source; stems = impl->stems; }
     return renderSelection(source, stems, project, padIndex);
 }
-void AudioEngine::prepareToPlay(int, double sampleRate) {
+void AudioEngine::setWorkstationState(const WorkstationState& state, bool restorePlugins) {
+    impl->workstation.setState(state);
+    impl->plugins.applyState(state, restorePlugins);
+    setWorkstationEnabled(true);
+}
+void AudioEngine::setWorkstationEnabled(bool enabled) {
+    Impl::Command command; command.type = Impl::CommandType::Workstation;
+    command.workstation.type = WorkstationControl::Type::Enable; command.workstation.flag = enabled;
+    if (!impl->enqueue(command)) throw std::runtime_error("The audio command queue is full. Try the workstation control again.");
+}
+void AudioEngine::playWorkstation(WorkstationPlayMode mode) {
+    Impl::Command command; command.type = Impl::CommandType::Workstation;
+    command.workstation.type = WorkstationControl::Type::Play; command.workstation.mode = mode;
+    if (!impl->enqueue(command)) throw std::runtime_error("The audio command queue is full. Try Play again.");
+}
+void AudioEngine::stopWorkstation() {
+    Impl::Command command; command.type = Impl::CommandType::Workstation; command.workstation.type = WorkstationControl::Type::Stop;
+    if (!impl->enqueue(command)) impl->workstation.stop();
+}
+void AudioEngine::seekWorkstation(double beat) {
+    Impl::Command command; command.type = Impl::CommandType::Workstation;
+    command.workstation.type = WorkstationControl::Type::Seek; command.workstation.beat = std::isfinite(beat) ? beat : 0;
+    if (!impl->enqueue(command)) throw std::runtime_error("The audio command queue is full. Try seeking again.");
+}
+void AudioEngine::setPatternRecording(bool enabled) {
+    Impl::Command command; command.type = Impl::CommandType::Workstation;
+    command.workstation.type = WorkstationControl::Type::Record; command.workstation.flag = enabled;
+    if (!impl->enqueue(command)) { if (enabled) throw std::runtime_error("The audio command queue is full. Try recording again."); impl->workstation.setRecording(false); }
+}
+void AudioEngine::launchClip(int track, int scene) {
+    Impl::Command command; command.type = Impl::CommandType::Workstation;
+    command.workstation.type = WorkstationControl::Type::Launch; command.workstation.track = track; command.workstation.scene = scene;
+    if (!impl->enqueue(command)) throw std::runtime_error("The audio command queue is full. Try launching again.");
+}
+void AudioEngine::stopClipTrack(int track) {
+    Impl::Command command; command.type = Impl::CommandType::Workstation;
+    command.workstation.type = WorkstationControl::Type::StopTrack; command.workstation.track = track;
+    if (!impl->enqueue(command)) impl->workstation.stopTrack(track);
+}
+void AudioEngine::setAudioAsset(WorkstationId id, std::shared_ptr<const AudioData> audio) { impl->workstation.setAudioAsset(id, std::move(audio)); }
+void AudioEngine::removeAudioAsset(WorkstationId id) { impl->workstation.removeAudioAsset(id); }
+WorkstationSnapshot AudioEngine::workstationSnapshot() const { return impl->workstation.snapshot(); }
+bool AudioEngine::popRecordedNote(RecordedWorkstationNote& note) { return impl->workstation.popRecordedNote(note); }
+PluginHost& AudioEngine::pluginHost() { return impl->plugins; }
+void AudioEngine::startMasterCapture(const juce::File& file) {
+    impl->capture.start(file, impl->outputRate);
+    Impl::Command command; command.type = Impl::CommandType::CaptureStart;
+    if (!impl->enqueue(command)) { impl->capture.stop(); throw std::runtime_error("The audio command queue is full. The recording could not start."); }
+}
+void AudioEngine::stopMasterCapture() {
+    Impl::Command command; command.type = Impl::CommandType::CaptureStop;
+    if (!impl->enqueue(command)) impl->capture.stop();
+}
+CaptureSnapshot AudioEngine::captureSnapshot() const { return impl->capture.snapshot(); }
+
+AudioData AudioEngine::bouncePattern(int patternIndex, int track) const {
+    if (patternIndex < 0 || patternIndex >= 16 || track < 0 || track >= 8) throw std::runtime_error("Choose a valid pattern and mixer track to freeze.");
+    const auto workstation = impl->workstation.stateForControl();
+    std::shared_ptr<const AudioData> source;
+    std::array<std::shared_ptr<const AudioData>, 4> stems;
+    Project project;
+    { const std::lock_guard<std::mutex> lock(impl->sourceMutex); source = impl->source; stems = impl->stems; project = impl->lastProject; }
+    if (!source) throw std::runtime_error("Import a sampler source before freezing a pattern.");
+    const auto& pattern = workstation.patterns[static_cast<std::size_t>(patternIndex)];
+    const auto& settings = workstation.tracks[static_cast<std::size_t>(track)];
+    const double rate = source->sampleRate;
+    const double framesPerBeat = rate * 60.0 / workstation.tempo;
+    const double requested = std::round(pattern.lengthBeats * framesPerBeat);
+    if (!std::isfinite(requested) || requested < 1 || requested > 32.0 * 1024 * 1024)
+        throw std::runtime_error("This pattern is too long to freeze in memory. Shorten the pattern first.");
+    const auto frames = static_cast<std::size_t>(requested);
+    AudioData result; result.sampleRate = rate; result.channels.assign(2, std::vector<float>(frames));
+    for (std::size_t noteIndex = 0; noteIndex < pattern.notes.size(); ++noteIndex) {
+        const auto& note = pattern.notes[noteIndex];
+        Project effective = project;
+        auto& pad = effective.pads[static_cast<std::size_t>(note.pad)];
+        if (pad.empty()) continue;
+        pad.pitchSemitones += note.semitones;
+        const auto onset = static_cast<std::size_t>(std::llround(note.beat * framesPerBeat));
+        const auto held = static_cast<std::size_t>(std::llround(note.duration * framesPerBeat));
+        const auto attack = static_cast<std::size_t>(bounded(pad.attackMs, 0, 10000, 0) * rate / 1000);
+        const auto release = static_cast<std::size_t>(bounded(pad.releaseMs, 0, 10000, 0) * rate / 1000);
+        const bool hold = project.playbackMode == CuePlaybackMode::Hold;
+        const auto gate = hold ? held : attack;
+        auto length = gate + release;
+        if (length == 0) continue;
+        std::size_t nextOnset = std::numeric_limits<std::size_t>::max();
+        if (project.mono) for (std::size_t nextIndex = 0; nextIndex < pattern.notes.size(); ++nextIndex) {
+            const auto& next = pattern.notes[nextIndex];
+            const double nextBeat = next.beat > note.beat || (next.beat == note.beat && nextIndex > noteIndex)
+                ? next.beat : next.beat + pattern.lengthBeats;
+            nextOnset = std::min(nextOnset, static_cast<std::size_t>(std::llround((nextBeat - note.beat) * framesPerBeat)));
+        }
+        const auto stealFade = static_cast<std::size_t>(rate * .005);
+        if (nextOnset != std::numeric_limits<std::size_t>::max()) length = std::min(length, nextOnset + stealFade);
+        // Render only the portion this note can sound. An open-ended cue over a
+        // long source must not copy/render the entire remainder for every note.
+        double speed = bounded(pad.speedRatio, .25f, 4.f, 1.f);
+        if (project.sourceBpm > 0 && std::isfinite(project.sourceBpm) && std::isfinite(project.projectBpm))
+            speed *= std::clamp(project.projectBpm / project.sourceBpm, .25, 4.0);
+        if (!project.pitchTimeEnabled) {
+            double pitch = pad.pitchSemitones + project.globalPitchSemitones + (pad.detuneCents + project.globalDetuneCents) / 100.0;
+            if (project.syncKey) pitch += keySemitoneOffset(project.sourceKey, project.projectKey);
+            speed *= std::exp2(std::clamp(pitch, -60.0, 60.0) / 12.0);
+        }
+        speed = std::clamp(speed, 1.0 / 32.0, 32.0);
+        const auto inputFrames = std::max<std::size_t>(1, static_cast<std::size_t>(std::ceil(length * speed)));
+        pad.end = std::min(pad.end, source->frames());
+        if (pad.end <= pad.start) continue;
+        if (inputFrames < pad.end - pad.start) {
+            if (pad.reverse) pad.start = pad.end - inputFrames;
+            else pad.end = pad.start + inputFrames;
+        }
+        // Apply the performance envelope once, including a frozen attack level
+        // when a Hold gate is released before the attack reaches full level.
+        effective.playbackMode = CuePlaybackMode::Hold;
+        pad.attackMs = pad.releaseMs = 0;
+        const auto rendered = renderSelection(source, stems, effective, note.pad);
+        if (!rendered.valid()) continue;
+        length = std::min(length, rendered.frames());
+        const auto envelopeAt = [&](std::size_t sample) {
+            const float attackLevel = attack == 0 ? 1.f : static_cast<float>(std::min(1.0, static_cast<double>(std::min(sample, gate)) / static_cast<double>(attack)));
+            return sample < gate ? attackLevel : attackLevel * (release == 0 ? 0.f : std::max(0.f, 1.f - static_cast<float>(sample - gate) / static_cast<float>(release)));
+        };
+        const float velocity = project.velocityEnabled ? note.velocity : 1.f;
+        for (std::size_t sample = 0; sample < length; ++sample) {
+            float envelope = envelopeAt(sample);
+            if (sample >= nextOnset && gate + release > nextOnset + stealFade)
+                envelope = envelopeAt(nextOnset) * (stealFade == 0 ? 0.f : std::max(0.f, 1.f - static_cast<float>(sample - nextOnset) / static_cast<float>(stealFade)));
+            // The bounce contains one period; sampler release tails crossing
+            // that boundary are folded into the start of the audio clip.
+            const auto destination = (onset + sample) % frames;
+            for (std::size_t channel = 0; channel < 2; ++channel)
+                result.channels[channel][destination] += rendered.channels[std::min(channel, rendered.channels.size() - 1)][sample] * envelope * velocity;
+        }
+    }
+    std::array<FxRack, 4> racks;
+    for (auto& rack : racks) rack.prepare(rate, 512);
+    racks[0].setSlots(settings.effects); racks[1].setSlots(workstation.sendAEffects);
+    racks[2].setSlots(workstation.sendBEffects); racks[3].setSlots(workstation.masterEffects);
+    const bool solo = std::any_of(workstation.tracks.begin(), workstation.tracks.end(), [](const auto& t) { return t.solo; });
+    float gain = settings.mute || (solo && !settings.solo) ? 0 : std::pow(10.f, settings.gainDb / 20.f);
+    if (settings.crossfadeAssignment == CrossfadeAssignment::A) gain *= static_cast<float>(std::cos(workstation.crossfader * pi * .5));
+    if (settings.crossfadeAssignment == CrossfadeAssignment::B) gain *= static_cast<float>(std::sin(workstation.crossfader * pi * .5));
+    const std::array<float, 2> pan { std::sqrt(1.f - std::max(0.f, settings.pan)), std::sqrt(1.f + std::min(0.f, settings.pan)) };
+    const float master = std::pow(10.f, workstation.masterGainDb / 20.f) * impl->masterGain.load();
+    std::array<std::array<float, 512>, 4> sends {};
+    for (std::size_t offset = 0; offset < frames; offset += 512) {
+        const auto count = std::min<std::size_t>(512, frames - offset);
+        auto* left = result.channels[0].data() + offset; auto* right = result.channels[1].data() + offset;
+        racks[0].processStereo(left, right, count);
+        for (std::size_t sample = 0; sample < count; ++sample) {
+            left[sample] *= gain * pan[0]; right[sample] *= gain * pan[1];
+            sends[0][sample] = left[sample] * settings.sendA; sends[1][sample] = right[sample] * settings.sendA;
+            sends[2][sample] = left[sample] * settings.sendB; sends[3][sample] = right[sample] * settings.sendB;
+        }
+        racks[1].processStereo(sends[0].data(), sends[1].data(), count); racks[2].processStereo(sends[2].data(), sends[3].data(), count);
+        for (std::size_t sample = 0; sample < count; ++sample) { left[sample] += sends[0][sample] + sends[2][sample]; right[sample] += sends[1][sample] + sends[3][sample]; }
+        racks[3].processStereo(left, right, count);
+        for (std::size_t sample = 0; sample < count; ++sample) { left[sample] = std::clamp(left[sample] * master, -1.f, 1.f); right[sample] = std::clamp(right[sample] * master, -1.f, 1.f); }
+    }
+    return result;
+}
+
+void AudioEngine::prepareToPlay(int samplesPerBlockExpected, double sampleRate) {
     impl->outputRate = std::isfinite(sampleRate) && sampleRate > 0 ? std::clamp(sampleRate, 8000.0, 384000.0) : 44100;
     for (int slot = 0; slot < totalVoices; ++slot) { impl->finishVoice(slot, false); impl->processors[static_cast<std::size_t>(slot)].prepare(impl->outputRate); }
     impl->activeVoices.store(0); impl->activeMask.store(0);
+    impl->maximumBlock = static_cast<std::size_t>(std::clamp(samplesPerBlockExpected, 512, 16384));
+    impl->masterEnvelope.resize(impl->maximumBlock);
+    impl->workstation.prepare(impl->outputRate, impl->maximumBlock);
+    for (std::size_t bus = 0; bus < impl->buses.size(); ++bus) {
+        impl->buses[bus].setSize(2, static_cast<int>(impl->maximumBlock));
+        impl->effects[bus].prepare(impl->outputRate, impl->maximumBlock);
+    }
+    impl->plugins.prepare(impl->outputRate, static_cast<int>(impl->maximumBlock));
 }
 void AudioEngine::releaseResources() {
+    impl->capture.stop();
     for (int slot = 0; slot < totalVoices; ++slot) impl->finishVoice(slot, false);
     impl->activeVoices.store(0); impl->activeMask.store(0); impl->peak.store(0);
 }
@@ -854,6 +1163,14 @@ void AudioEngine::getNextAudioBlock(const juce::AudioSourceChannelInfo& info) {
     const juce::ScopedNoDenormals noDenormals;
     info.clearActiveBufferRegion();
     if (!info.buffer || info.numSamples <= 0) return;
+    if (impl->maximumBlock > 0 && static_cast<std::size_t>(info.numSamples) > impl->maximumBlock) {
+        for (int offset = 0; offset < info.numSamples; offset += static_cast<int>(impl->maximumBlock)) {
+            const juce::AudioSourceChannelInfo chunk(info.buffer, info.startSample + offset, std::min(static_cast<int>(impl->maximumBlock), info.numSamples - offset));
+            getNextAudioBlock(chunk);
+        }
+        return;
+    }
+    impl->workstation.beginBlock();
     const auto* bank = impl->pinCurrentBank();
     if (impl->resetSourceRequested.exchange(false)) {
         for (int slot = 0; slot < totalVoices; ++slot) impl->finishVoice(slot, false);
@@ -865,6 +1182,10 @@ void AudioEngine::getNextAudioBlock(const juce::AudioSourceChannelInfo& info) {
     for (int offset = 0; offset < size2; ++offset) impl->applyCommand(impl->commands[static_cast<std::size_t>(start2 + offset)], bank);
     impl->fifo.finishedRead(size1 + size2);
     if (impl->stopRequested.exchange(false)) impl->applyCommand({ Impl::CommandType::Stop }, bank);
+    const bool studio = impl->workstation.enabled() && impl->maximumBlock > 0;
+    const auto* studioState = impl->workstation.currentState();
+    const double studioBlockBeat = impl->workstation.currentBeat();
+    if (studio) for (auto& bus : impl->buses) bus.clear(0, info.numSamples);
     // Adopt fresh controls and aligned stem streams at a block boundary, while
     // the source identity is unchanged. Every raw bank remains hazard-protected.
     for (int slot = 0; slot < totalVoices; ++slot) {
@@ -889,9 +1210,11 @@ void AudioEngine::getNextAudioBlock(const juce::AudioSourceChannelInfo& info) {
         bool processed = false, filtered = false, lowPass = false;
     };
     std::array<Controls, totalVoices> controls;
-    for (int slot = 0; slot < totalVoices; ++slot) {
+    std::array<std::uint64_t, totalVoices> controlSerial {};
+    const auto updateControl = [&](int slot) {
         const auto& voice = impl->voices[static_cast<std::size_t>(slot)];
-        if (!voice.bank || !voice.bank->source) continue;
+        if (!voice.bank || !voice.bank->source) return;
+        controlSerial[static_cast<std::size_t>(slot)] = voice.serial;
         const auto& pad = impl->padFor(voice);
         const auto& project = voice.bank->project;
         auto& control = controls[static_cast<std::size_t>(slot)];
@@ -911,14 +1234,31 @@ void AudioEngine::getNextAudioBlock(const juce::AudioSourceChannelInfo& info) {
         }
         control.firstChannel = voice.audition ? 0 : std::clamp(pad.outputChannel, 0, 31) * 2;
         if (control.firstChannel + 1 >= info.buffer->getNumChannels()) control.firstChannel = 0;
-    }
+    };
+    for (int slot = 0; slot < totalVoices; ++slot) updateControl(slot);
+    struct SchedulerContext { Impl* engine; const Impl::Bank* bank; } scheduler { impl.get(), bank };
+    const auto eventCallback = +[](void* opaque, const ScheduledPadEvent& event) {
+        const auto& context = *static_cast<SchedulerContext*>(opaque);
+        Impl::Command command;
+        command.type = event.noteOn ? Impl::CommandType::Trigger : Impl::CommandType::Release;
+        command.index = event.pad; command.note = event.semitones; command.velocity = event.velocity;
+        command.track = event.track; command.sequenced = true; command.sequenceToken = event.token;
+        context.engine->applyCommand(command, context.bank);
+    };
     float blockPeak = 0;
     const auto gain = impl->masterGain.load();
     for (int sample = 0; sample < info.numSamples; ++sample) {
+        std::array<float, 8> clipsLeft {}, clipsRight {};
+        impl->workstation.tick(eventCallback, &scheduler, clipsLeft.data(), clipsRight.data());
+        if (studio) for (std::size_t track = 0; track < 8; ++track) {
+            impl->buses[track].setSample(0, sample, clipsLeft[track]); impl->buses[track].setSample(1, sample, clipsRight[track]);
+        }
         impl->smoothedGain += .001f * (gain - impl->smoothedGain);
+        if (studio) impl->masterEnvelope[static_cast<std::size_t>(sample)] = impl->smoothedGain;
         for (int slot = 0; slot < totalVoices; ++slot) {
             auto& voice = impl->voices[static_cast<std::size_t>(slot)];
             if (!voice.bank || !voice.bank->source) continue;
+            if (controlSerial[static_cast<std::size_t>(slot)] != voice.serial) updateControl(slot);
             const auto& pad = impl->padFor(voice);
             const auto& project = voice.bank->project;
             const auto& control = controls[static_cast<std::size_t>(slot)];
@@ -961,7 +1301,10 @@ void AudioEngine::getNextAudioBlock(const juce::AudioSourceChannelInfo& info) {
                 float value = values[channel];
                 if (control.filtered) { voice.filterState[channel] += control.alpha * (value - voice.filterState[channel]); value = control.lowPass ? voice.filterState[channel] : value - voice.filterState[channel]; }
                 const int outputChannel = control.firstChannel + static_cast<int>(channel);
-                if (outputChannel < info.buffer->getNumChannels()) info.buffer->addSample(outputChannel, info.startSample + sample, value * envelope * control.gain * impl->smoothedGain);
+                if (studio) {
+                    const auto track = static_cast<std::size_t>(voice.track >= 0 ? voice.track : impl->workstation.selectedTrack());
+                    impl->buses[track].addSample(static_cast<int>(channel), sample, value * envelope * control.gain);
+                } else if (outputChannel < info.buffer->getNumChannels()) info.buffer->addSample(outputChannel, info.startSample + sample, value * envelope * control.gain * impl->smoothedGain);
             }
             const double direction = pad.reverse ? -1 : 1;
             voice.position += direction * voice.bank->source->sampleRate / impl->outputRate * speed;
@@ -999,15 +1342,66 @@ void AudioEngine::getNextAudioBlock(const juce::AudioSourceChannelInfo& info) {
                     info.buffer->addSample(channel, info.startSample + sample, click);
             }
         } else impl->metronomeRemaining = 0;
+        impl->workstation.advance();
+    }
+    if (studio && studioState) {
+        impl->plugins.setTransport(studioState->tempo, studioBlockBeat, impl->workstation.playing());
+        const bool anySolo = std::any_of(studioState->tracks.begin(), studioState->tracks.end(), [](const auto& track) { return track.solo; });
+        for (std::size_t track = 0; track < 8; ++track) {
+            const auto& settings = studioState->tracks[track];
+            auto& bus = impl->buses[track];
+            impl->effects[track].setSlots(settings.effects);
+            impl->effects[track].processStereo(bus.getWritePointer(0), bus.getWritePointer(1), static_cast<std::size_t>(info.numSamples));
+            impl->plugins.processStereo(static_cast<int>(track), bus.getWritePointer(0), bus.getWritePointer(1), info.numSamples);
+            float fader = std::pow(10.f, settings.gainDb / 20.f);
+            if (settings.mute || (anySolo && !settings.solo)) fader = 0;
+            if (settings.crossfadeAssignment == CrossfadeAssignment::A) fader *= static_cast<float>(std::cos(studioState->crossfader * pi * .5));
+            if (settings.crossfadeAssignment == CrossfadeAssignment::B) fader *= static_cast<float>(std::sin(studioState->crossfader * pi * .5));
+            const float targetLeft = fader * std::sqrt(1.f - std::max(0.f, settings.pan));
+            const float targetRight = fader * std::sqrt(1.f + std::min(0.f, settings.pan));
+            const float smoothing = static_cast<float>(1 - std::exp(-1.0 / (.005 * impl->outputRate)));
+            float trackPeak = 0;
+            for (int sample = 0; sample < info.numSamples; ++sample) {
+                impl->trackLeftGain[track] += smoothing * (targetLeft - impl->trackLeftGain[track]);
+                impl->trackRightGain[track] += smoothing * (targetRight - impl->trackRightGain[track]);
+                const float left = bus.getSample(0, sample) * impl->trackLeftGain[track], right = bus.getSample(1, sample) * impl->trackRightGain[track];
+                trackPeak = std::max({ trackPeak, std::abs(left), std::abs(right) });
+                impl->buses[10].addSample(0, sample, left); impl->buses[10].addSample(1, sample, right);
+                impl->buses[8].addSample(0, sample, left * settings.sendA); impl->buses[8].addSample(1, sample, right * settings.sendA);
+                impl->buses[9].addSample(0, sample, left * settings.sendB); impl->buses[9].addSample(1, sample, right * settings.sendB);
+            }
+            impl->workstation.setTrackPeak(static_cast<int>(track), trackPeak);
+        }
+        impl->effects[8].setSlots(studioState->sendAEffects); impl->effects[9].setSlots(studioState->sendBEffects);
+        for (std::size_t send = 8; send < 10; ++send) {
+            auto& bus = impl->buses[send];
+            impl->effects[send].processStereo(bus.getWritePointer(0), bus.getWritePointer(1), static_cast<std::size_t>(info.numSamples));
+            impl->buses[10].addFrom(0, 0, bus, 0, 0, info.numSamples); impl->buses[10].addFrom(1, 0, bus, 1, 0, info.numSamples);
+        }
+        auto& master = impl->buses[10];
+        impl->effects[10].setSlots(studioState->masterEffects);
+        impl->effects[10].processStereo(master.getWritePointer(0), master.getWritePointer(1), static_cast<std::size_t>(info.numSamples));
+        impl->plugins.processStereo(8, master.getWritePointer(0), master.getWritePointer(1), info.numSamples);
+        const float masterLevel = std::pow(10.f, studioState->masterGainDb / 20.f);
+        for (int channel = 0; channel < std::min(2, info.buffer->getNumChannels()); ++channel)
+            for (int sample = 0; sample < info.numSamples; ++sample)
+                info.buffer->addSample(channel, info.startSample + sample, master.getSample(channel, sample) * masterLevel * impl->masterEnvelope[static_cast<std::size_t>(sample)]);
+    }
+    for (int sample = 0; sample < info.numSamples; ++sample) {
         for (int channel = 0; channel < info.buffer->getNumChannels(); ++channel) {
-            const float value = std::clamp(info.buffer->getSample(channel, info.startSample + sample), -1.f, 1.f);
+            const float raw = info.buffer->getSample(channel, info.startSample + sample);
+            const float value = std::isfinite(raw) ? std::clamp(raw, -1.f, 1.f) : 0;
             info.buffer->setSample(channel, info.startSample + sample, value); blockPeak = std::max(blockPeak, std::abs(value));
         }
+        const float left = info.buffer->getNumChannels() > 0 ? info.buffer->getSample(0, info.startSample + sample) : 0;
+        const float right = info.buffer->getNumChannels() > 1 ? info.buffer->getSample(1, info.startSample + sample) : left;
+        impl->capture.push(left, right);
     }
     int count = 0; std::uint32_t mask = 0;
     for (int slot = 0; slot < voiceLimit; ++slot) { const auto& voice = impl->voices[static_cast<std::size_t>(slot)]; if (voice.bank) { ++count; mask |= std::uint32_t(1) << voice.pad; } }
     impl->activeVoices.store(count); impl->activeMask.store(mask); impl->peak.store(blockPeak);
     impl->hazards[0].store(nullptr);
+    impl->workstation.endBlock();
 }
 void AudioEngine::handleIncomingMidiMessage(juce::MidiInput*, const juce::MidiMessage& message) {
     if (message.isAllNotesOff() || message.isAllSoundOff()) { stop(); return; }

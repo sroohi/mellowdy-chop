@@ -19,7 +19,7 @@ class StemButton;
 class StemSeparator;
 
 // The source player, per-cue strip, Autoset toolbar and 8 x 4 performance grid
-// follow the supplied Sample manual. All application state belongs to this window.
+// follow the supplied Sample manual. StudioComponent handles the outer workstation.
 class MainComponent final : public juce::Component,
                             public juce::FileDragAndDropTarget,
                             public juce::DragAndDropContainer,
@@ -43,6 +43,17 @@ public:
     void showAudioSettings();
     void stopPlayback();
     void loadDemo();
+    void setStudioTempo(double bpm);
+    void configureStudioRouting(std::function<int()> read, std::function<void(int)> change);
+    void refreshStudioRouting();
+    AudioEngine& audioEngine() { return engine; }
+    const Project& samplerProject() const { return project; }
+    std::shared_ptr<const AudioData> samplerSource() const { return source; }
+    std::function<int()> onReadStudioTrack;
+    std::function<void(int)> onStudioTrackChanged;
+    std::function<void(double)> onHostTempoChanged;
+    std::function<WorkstationState()> onReadWorkstationState;
+    std::function<void(const WorkstationState&)> onRestoreWorkstationState;
     bool isReadyForSmokeTest() const;
     juce::var runWorkflowSmoke();
     void beginStemSmoke();

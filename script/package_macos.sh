@@ -32,7 +32,7 @@ MODEL_CHECKSUM="$(shasum -a 256 "$MODEL")"
 [[ "${MODEL_CHECKSUM%% *}" == 72b17c42d308982ddb5069bc3bf48b81a5aac4cb6516e4366c0fa7cef6df0064 ]] || {
   echo "Bundled native model checksum mismatch; refusing to package this app." >&2; exit 1;
 }
-for NOTICE in Demucs-MIT.txt DemucsCpp-MIT.txt Eigen-MPL-2.0.txt; do
+for NOTICE in Demucs-MIT.txt DemucsCpp-MIT.txt Eigen-MPL-2.0.txt VST3-SDK-LICENSE.txt; do
   [[ -s "$APP/Contents/Resources/Licenses/$NOTICE" ]] || { echo "Missing bundled license notice: $NOTICE" >&2; exit 1; }
 done
 for NOTICE in THIRD_PARTY_NOTICES.md LICENSE RubberBand-COPYING.txt; do
@@ -60,7 +60,19 @@ cat > "$OUTPUT_DIR/HTDemucs-model-provenance.json" <<'JSON'
 JSON
 
 if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
-  /usr/bin/codesign --force --options runtime --timestamp --sign "$CODESIGN_IDENTITY" "$APP"
+  ENTITLEMENTS="$ROOT_DIR/script/Samplify.entitlements"
+  /usr/bin/plutil -lint "$ENTITLEMENTS"
+  /usr/bin/codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS" --sign "$CODESIGN_IDENTITY" "$APP"
+  /usr/bin/codesign --display --entitlements :- "$APP" > "$STAGING/signed-entitlements.plist"
+  /usr/bin/plutil -lint "$STAGING/signed-entitlements.plist"
+  [[ "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.cs.disable-library-validation' "$STAGING/signed-entitlements.plist")" == true ]] || {
+    echo "The signed host is missing its third-party plugin loading entitlement." >&2; exit 1;
+  }
+  for FORBIDDEN in com.apple.security.cs.allow-jit com.apple.security.cs.allow-unsigned-executable-memory com.apple.security.app-sandbox; do
+    if /usr/libexec/PlistBuddy -c "Print :$FORBIDDEN" "$STAGING/signed-entitlements.plist" >/dev/null 2>&1; then
+      echo "Unexpected entitlement in signed app: $FORBIDDEN" >&2; exit 1
+    fi
+  done
 else
   /usr/bin/codesign --force --sign - --timestamp=none "$APP"
   echo "Packaging an ad-hoc signed development build. It is not Developer ID signed or notarized."
