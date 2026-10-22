@@ -28,7 +28,8 @@ public:
     std::function<void(WorkstationId)> onSelect, onDelete;
     std::function<void(WorkstationId, ArrangementClip, bool)> onChange;
     std::function<const std::vector<float>*(WorkstationId)> peaks;
-    void updateSize(int viewportWidth) {
+    void updateSize(int viewportWidth, int viewportHeight = 0) {
+        rowHeight = std::max(34, (viewportHeight - 22) / 8);
         double end = 64;
         for (const auto& c : state.arrangement) end = std::max(end, c.startBeat + c.lengthBeats + 8);
         setSize(std::max(viewportWidth, 110 + static_cast<int>(std::ceil(end / 4) * 4 * pixelsPerBeat)), 22 + rowHeight * 8);
@@ -98,7 +99,8 @@ private:
         legend(g, name, r.reduced(6, 1), 10); g.setColour(HW::ink().withAlpha(.5f)); g.drawLine(r.getRight() - 4, r.getY() + 5, r.getRight() - 4, r.getBottom() - 5);
     }
     WorkstationState& state;
-    static constexpr int rowHeight = 34, pixelsPerBeat = 24;
+    int rowHeight = 34;
+    static constexpr int pixelsPerBeat = 24;
     bool dragging = false, resize = false, copy = false;
     juce::Point<float> dragStart;
     ArrangementClip original, preview;
@@ -189,11 +191,14 @@ public:
     std::function<void(const juce::ModifierKeys&)> onPress;
     void paint(juce::Graphics& g) override {
         auto r = getLocalBounds().toFloat().reduced(2);
-        g.setColour(active ? HW::lcd().brighter(.15f) : empty ? HW::panel().darker(.03f) : HW::lcd().darker(.07f)); g.fillRoundedRectangle(r, 3);
-        g.setColour(active ? HW::lcdInk() : HW::trim()); g.drawRoundedRectangle(r, 3, active ? 2.f : 1.f);
-        g.setColour(pending ? HW::amber() : active ? HW::lcdInk() : HW::trim().withAlpha(.4f)); g.fillEllipse(r.getX() + 7, r.getY() + 7, 5, 5);
-        legend(g, empty ? "+ ASSIGN" : label, r.reduced(9, 4).withTrimmedTop(5), 10, juce::Justification::centred);
-        if (pending) { g.setColour(HW::amber()); g.fillRect(r.getX() + 2, r.getBottom() - 4, r.getWidth() - 4, 2.f); }
+        g.setColour(HW::graphite()); g.fillRoundedRectangle(r.translated(0, 1), 2);
+        r = r.reduced(1).withTrimmedBottom(2);
+        g.setColour(active ? HW::lcd().brighter(.08f) : HW::panel().darker(.08f)); g.fillRoundedRectangle(r, 2);
+        g.setColour(HW::chassis().brighter(.13f)); g.drawLine(r.getX() + 2, r.getY() + 1, r.getRight() - 2, r.getY() + 1);
+        g.setColour(pending ? HW::amber() : active ? HW::lcdInk() : HW::trim().withAlpha(.65f)); g.fillRect(r.getX() + 5, r.getY() + 6, 3.f, r.getHeight() - 12);
+        g.setColour(HW::ink()); g.setFont(HW::monoFont(9, true));
+        g.drawText(empty ? juce::String(scene + 1) + "  + ASSIGN" : label, r.reduced(11, 3), juce::Justification::centredLeft);
+        if (pending) { g.setColour(HW::amber()); g.fillRect(r.getX() + 3, r.getBottom() - 3, r.getWidth() - 6, 2.f); }
     }
     void mouseDown(const juce::MouseEvent& e) override { if (isEnabled() && onPress) onPress(e.mods); }
 };
@@ -301,7 +306,7 @@ WorkstationComponent::WorkstationComponent(AudioEngine& e) : engine(e) {
     fxTypeChoice.onChange = [this] { if (!refreshing) { const auto type = static_cast<FxType>(fxTypeChoice.getSelectedId() - 1); edit([this, type](auto&) { effectRack()[static_cast<std::size_t>(fxSlot)] = defaultFxSlot(type); }); } };
     combo(fxPresetChoice); int presetId = 1; for (const auto& preset : fxPresets()) fxPresetChoice.addItem(juce::String(fxPresetCategoryName(preset.category)) + " / " + preset.name, presetId++);
     fxPresetChoice.setTextWhenNothingSelected("LOAD CHAIN PRESET..."); fxPresetChoice.onChange = [this] { if (!refreshing && fxPresetChoice.getSelectedId() > 0) applyPreset(fxPresetChoice.getSelectedId() - 1); };
-    for (int slot = 0; slot < 4; ++slot) { button(fxSlotButtons[static_cast<std::size_t>(slot)], [this, slot] { fxSlot = slot; refreshFX(); }); }
+    for (int slot = 0; slot < 4; ++slot) { button(fxSlotButtons[static_cast<std::size_t>(slot)], [this, slot] { fxSlot = slot; refreshFX(); }); button(hostedSlotButtons[static_cast<std::size_t>(slot)], [this, slot] { fxSlot = slot; refreshFX(); }); }
     for (int p = 0; p < 6; ++p) {
         auto i = static_cast<std::size_t>(p); slider(fxParameters[i], 0, 1, .0001, ""); label(fxParameterLabels[i], "");
         fxParameters[i].textFromValueFunction = [this, p](double value) { const auto type = effectRack()[static_cast<std::size_t>(fxSlot)].type; const auto& d = fxDefinition(type); if (p >= d.parameterCount) return juce::String(); const auto actual = fxParameterValue(type, static_cast<std::size_t>(p), static_cast<float>(value)); return juce::String(actual, std::abs(actual) >= 100 ? 0 : std::abs(actual) >= 10 ? 1 : 2) + " " + d.parameters[static_cast<std::size_t>(p)].unit; };
@@ -309,15 +314,20 @@ WorkstationComponent::WorkstationComponent(AudioEngine& e) : engine(e) {
         fxParameters[i].onValueChange = [this, p] { if (!refreshing) edit([this, p](auto&) { effectRack()[static_cast<std::size_t>(fxSlot)].parameters[static_cast<std::size_t>(p)] = static_cast<float>(fxParameters[static_cast<std::size_t>(p)].getValue()); }, !gestureBefore); };
     }
     slider(fxMix, 0, 100, .1, "%"); fxMix.onValueChange = [this] { if (!refreshing) edit([this](auto&) { effectRack()[static_cast<std::size_t>(fxSlot)].mix = static_cast<float>(fxMix.getValue() / 100); }, !gestureBefore); };
-    label(fxName, "OFF"); fxName.setFont(HW::labelFont(25)); label(fxDescription, "BUILT-IN EFFECT PROCESSOR"); label(fxMixLabel, "DRY / WET");
+    label(fxName, "OFF"); fxName.setFont(HW::monoFont(23, true)); fxName.setJustificationType(juce::Justification::centredLeft); label(fxDescription, "BUILT-IN EFFECT PROCESSOR"); label(fxMixLabel, "DRY / WET");
     button(fxBypass, [this] { edit([this](auto&) { auto& b = effectRack()[static_cast<std::size_t>(fxSlot)].bypass; b = !b; }); });
     button(pluginManager, [this] { openPluginManager(); }); button(pluginEditor, [this] { openPluginEditor(); });
     button(pluginBypass, [this] { const int bus = pluginBus(); if (bus >= 0) engine.pluginHost().setBypass(bus, fxSlot, !engine.pluginHost().getSlotState(bus, fxSlot).bypass); });
     label(pluginStatus, ""); pluginStatus.setJustificationType(juce::Justification::centredLeft);
-    label(bounceNotice, "BOUNCE PATTERN prints built-in track, send and master FX. REC MIX also captures hosted plug-ins.");
+    label(bounceNotice, "BOUNCE prints built-in track, send + master FX.\nREC MIX also captures AU / VST3 inserts."); bounceNotice.setJustificationType(juce::Justification::centredLeft);
     engine.pluginHost().onChange = [safe = juce::Component::SafePointer<WorkstationComponent>(this)] { if (safe) safe->syncPluginState(); };
+    for (auto* c : std::initializer_list<juce::Component*> { &fxName, &fxDescription, &pluginStatus }) c->setColour(juce::Label::textColourId, HW::lcdInk());
+    for (auto& button : fxSlotButtons) button.getProperties().set("hardwareRole", "dark");
+    for (auto& button : hostedSlotButtons) button.getProperties().set("hardwareRole", "dark");
+    for (int p = 0; p < 16; ++p) { patternButtons[static_cast<std::size_t>(p)].setComponentID("pattern-cartridge-" + juce::String(p + 1)); }
+    arrangementViewport.setComponentID("song-timeline"); patternViewport.setComponentID("pattern-event-display");
     engine.setWorkstationState(state);
-    refresh(); startTimerHz(30); setSize(1200, 790);
+    refresh(); startTimerHz(30); setSize(1230, 710);
 }
 
 WorkstationComponent::~WorkstationComponent() {
@@ -471,7 +481,12 @@ void WorkstationComponent::refreshFX() {
     const auto& rack = effectRack(); const auto& slot = rack[static_cast<std::size_t>(fxSlot)]; const auto& definition = fxDefinition(slot.type);
     fxBusChoice.setSelectedId(fxBus + 1, juce::dontSendNotification); fxTypeChoice.setSelectedId(static_cast<int>(slot.type) + 1, juce::dontSendNotification);
     fxName.setText(definition.name, juce::dontSendNotification); fxDescription.setText(fxBusChoice.getText() + "  /  INSERT " + juce::String(fxSlot + 1), juce::dontSendNotification);
-    for (int s = 0; s < 4; ++s) { auto& button = fxSlotButtons[static_cast<std::size_t>(s)]; button.setButtonText("0" + juce::String(s + 1) + "   " + fxDefinition(rack[static_cast<std::size_t>(s)].type).name); button.setToggleState(s == fxSlot, juce::dontSendNotification); }
+    for (int s = 0; s < 4; ++s) {
+        auto& button = fxSlotButtons[static_cast<std::size_t>(s)]; button.setButtonText(fxDefinition(rack[static_cast<std::size_t>(s)].type).name); button.setToggleState(s == fxSlot, juce::dontSendNotification);
+        const auto hosted = pluginBus() >= 0 ? engine.pluginHost().getSlotState(pluginBus(), s) : HostedPluginSlot{};
+        auto& hostedButton = hostedSlotButtons[static_cast<std::size_t>(s)]; hostedButton.setButtonText(juce::String(s + 1).paddedLeft('0', 2) + "  " + (hosted.empty() ? "EMPTY INSERT" : juce::String(hosted.name))); hostedButton.setToggleState(s == fxSlot, juce::dontSendNotification); hostedButton.setEnabled(pluginBus() >= 0 && !busy);
+        hostedButton.setTooltip("Hosted plug-in slot " + juce::String(s + 1) + ". Select, then open the manager to load, remove or retry a missing AU / VST3.");
+    }
     for (int p = 0; p < 6; ++p) { const auto i = static_cast<std::size_t>(p); const bool used = p < definition.parameterCount; fxParameters[i].setEnabled(used && !busy); fxParameterLabels[i].setText(used ? definition.parameters[i].name : "", juce::dontSendNotification); fxParameters[i].setValue(slot.parameters[i], juce::dontSendNotification); fxParameters[i].updateText(); }
     fxMix.setValue(slot.mix * 100, juce::dontSendNotification); fxMix.setEnabled(slot.type != FxType::None && !busy); fxBypass.setToggleState(slot.bypass, juce::dontSendNotification); fxBypass.setEnabled(slot.type != FxType::None && !busy);
     const int bus = pluginBus(); const auto hosted = bus >= 0 ? engine.pluginHost().getSlotState(bus, fxSlot) : HostedPluginSlot{};
@@ -485,7 +500,7 @@ void WorkstationComponent::refresh() {
     trackChoice.setSelectedId(state.selectedTrack + 1, juce::dontSendNotification); patternLength.setSelectedId(static_cast<int>(state.patterns[static_cast<std::size_t>(state.selectedPattern)].lengthBeats / 4), juce::dontSendNotification);
     const auto quantizeId = state.recordQuantizeBeats == 0 ? 1 : state.recordQuantizeBeats >= 1 ? 2 : state.recordQuantizeBeats >= .5 ? 3 : state.recordQuantizeBeats >= .25 ? 4 : 5;
     recordQuantize.setSelectedId(quantizeId, juce::dontSendNotification); launchQuantize.setSelectedId(state.launchQuantizeBeats == 0 ? 1 : state.launchQuantizeBeats == 1 ? 2 : state.launchQuantizeBeats == 4 ? 3 : 4, juce::dontSendNotification);
-    for (int p = 0; p < 16; ++p) { auto& b = patternButtons[static_cast<std::size_t>(p)]; b.setToggleState(p == state.selectedPattern, juce::dontSendNotification); b.setTooltip(state.patterns[static_cast<std::size_t>(p)].name + " / " + std::to_string(state.patterns[static_cast<std::size_t>(p)].notes.size()) + " notes"); }
+    for (int p = 0; p < 16; ++p) { auto& b = patternButtons[static_cast<std::size_t>(p)]; b.setButtonText(juce::String(p + 1).paddedLeft('0', 2) + "  " + juce::String(state.patterns[static_cast<std::size_t>(p)].name)); b.setToggleState(p == state.selectedPattern, juce::dontSendNotification); b.setTooltip(state.patterns[static_cast<std::size_t>(p)].name + " / " + std::to_string(state.patterns[static_cast<std::size_t>(p)].notes.size()) + " notes"); }
     for (int t = 0; t < 8; ++t) {
         const auto i = static_cast<std::size_t>(t); const auto& track = state.tracks[i];
         trackButtons[i].setButtonText(track.name); trackButtons[i].setToggleState(t == state.selectedTrack, juce::dontSendNotification);
@@ -498,7 +513,7 @@ void WorkstationComponent::refresh() {
     undoButton.setEnabled(!busy && !undoStack.empty()); redoButton.setEnabled(!busy && !redoStack.empty());
     importButton.setEnabled(!busy); bounceButton.setEnabled(!busy && !state.patterns[static_cast<std::size_t>(state.selectedPattern)].notes.empty()); arrangement->setEnabled(!busy); pattern->setEnabled(!busy);
     refreshContentChoices(); refreshEditor(); refreshFX(); refreshing = false;
-    arrangement->updateSize(arrangementViewport.getMaximumVisibleWidth()); pattern->updateSize(patternViewport.getMaximumVisibleWidth());
+    arrangement->updateSize(arrangementViewport.getMaximumVisibleWidth(), arrangementViewport.getMaximumVisibleHeight()); pattern->updateSize(patternViewport.getMaximumVisibleWidth());
     arrangement->repaint(); pattern->repaint(); repaint();
 }
 
@@ -601,115 +616,151 @@ void WorkstationComponent::resized() {
     if (!arrangement || !pattern) return;
     for (auto* c : getChildren()) c->setVisible(false);
     auto place = [](juce::Component& c, int x, int y, int w, int h) { c.setBounds(x, y, std::max(0, w), std::max(0, h)); c.setVisible(true); };
-    const int width = getWidth(), height = getHeight(), left = 20, right = width - 20, top = 100, bottom = height - 34;
-    int x = left;
-    for (auto* b : { &playButton, &stopButton }) { place(*b, x, 25, 62, 36); x += 68; }
-    place(noteRecord, x, 25, 87, 36); x += 93; place(masterRecord, x, 25, 82, 36); x += 94;
-    place(clockLabel, x, 21, 177, 44); x += 190; place(tempoLabel, x, 12, 146, 14); place(tempo, x, 29, 146, 34);
-    place(undoButton, right - 140, 25, 66, 34); place(redoButton, right - 69, 25, 66, 34);
-    place(statusLabel, left + 3, height - 26, width - 46, 20);
-    auto patternRow = [&](int y, bool twoRows) {
-        const int gap = 5, columns = twoRows ? 8 : 16, bw = (right - left - (columns - 1) * gap) / columns;
-        for (int p = 0; p < 16; ++p) place(patternButtons[static_cast<std::size_t>(p)], left + (p % columns) * (bw + gap), y + (p / columns) * 34, bw, 29);
+    const int width = getWidth(), height = getHeight(), bottom = height - 34;
+    libraryPanel = editorPanel = inspectorPanel = utilityPanel = processorPanel = hostedPanel = performancePanel = masterPanel = {};
+    place(statusLabel, 19, height - 26, width - 39, 20);
+    // Transport belongs to the permanent Studio dock. The original controls remain
+    // owned here so their callbacks and workflow tests keep the same controller path.
+    auto library = [&] {
+        libraryPanel = { 12, 12, 158, bottom - 12 };
+        const int step = (libraryPanel.getHeight() - 48) / 16;
+        for (int p = 0; p < 16; ++p) place(patternButtons[static_cast<std::size_t>(p)], 21, 51 + p * step, 140, step - 3);
     };
-    auto noteInspector = [&](int y, int start, int available) {
-        const int kw = std::clamp((available - 140) / 3, 66, 100);
-        place(durationLabel, start, y, kw, 15); place(noteDuration, start, y + 13, kw, 65);
-        place(velocityLabel, start + kw, y, kw, 15); place(noteVelocity, start + kw, y + 13, kw, 65);
-        place(pitchLabel, start + kw * 2, y, kw, 15); place(notePitch, start + kw * 2, y + 13, kw, 65);
-        place(deleteNoteButton, start + kw * 3 + 8, y + 17, 112, 28); place(clearPatternButton, start + kw * 3 + 8, y + 49, 112, 25);
-    };
-    if (page == Page::Arrange) {
-        place(contentChoice, left, top, std::max(190, width - 890), 30); x = left + std::max(190, width - 890) + 8;
-        for (auto* b : { &addClipButton, &importButton, &bounceButton, &assetButton }) { const int bw = b == &bounceButton ? 132 : b == &addClipButton ? 116 : 112; place(*b, x, top, bw, 30); x += bw + 6; }
-        place(loopButton, right - 206, top, 64, 30); place(loopStart, right - 138, top, 64, 30); place(loopEnd, right - 69, top, 69, 30);
-        loopStart.setTextBoxStyle(juce::Slider::TextBoxAbove, false, 64, 18); loopEnd.setTextBoxStyle(juce::Slider::TextBoxAbove, false, 64, 18);
-        const int timelineHeight = std::clamp((bottom - top - 190) / 2, 180, 294);
-        place(arrangementViewport, left + 4, top + 43, width - 48, timelineHeight);
-        const int row = top + 52 + timelineHeight; patternRow(row, false);
-        place(patternViewport, left + 4, row + 37, width - 48, std::max(70, bottom - row - 126));
-        const int inspector = bottom - 82; noteInspector(inspector, left + 8, std::min(460, (width - 40) / 2));
-        const int start = width / 2 + 12; place(clipLengthLabel, start, inspector, 86, 15); place(clipLength, start, inspector + 13, 86, 65); place(clipGainLabel, start + 92, inspector, 86, 15); place(clipGain, start + 92, inspector + 13, 86, 65);
-        place(clipLoop, start + 184, inspector + 17, 96, 28); place(deleteClipButton, start + 184, inspector + 49, 96, 25);
-        place(trackChoice, right - 138, inspector + 17, 138, 27); place(recordQuantize, right - 138, inspector + 49, 138, 25);
-    } else if (page == Page::Patterns) {
-        patternRow(top, true); const int toolsY = top + 74;
-        place(trackLabel, left, toolsY, 48, 28); place(trackChoice, left + 50, toolsY, 138, 28);
-        place(patternLength, left + 198, toolsY, 120, 28); place(recordQuantize, left + 328, toolsY, 126, 28); place(bounceButton, right - 142, toolsY, 142, 28);
-        place(patternViewport, left + 4, toolsY + 38, width - 48, std::max(80, bottom - toolsY - 128));
-        noteInspector(bottom - 82, left + 20, 500); place(bounceNotice, left + 545, bottom - 78, width - 585, 68);
+    if (page == Page::Patterns) {
+        library();
+        const int x = 182, right = width - 202, middleWidth = right - x - 12;
+        editorPanel = { x, 12, middleWidth, bottom - 95 };
+        utilityPanel = { x, bottom - 73, middleWidth, 73 };
+        inspectorPanel = { right, 12, 190, bottom - 12 };
+        place(trackChoice, x + 12, 49, std::min(166, middleWidth / 3), 29);
+        const int trackRight = trackChoice.getRight() + 10;
+        place(patternLength, trackRight, 49, 116, 29); place(recordQuantize, trackRight + 126, 49, 113, 29);
+        place(patternViewport, x + 10, 96, middleWidth - 20, editorPanel.getBottom() - 106);
+        for (int n = 0; n < 3; ++n) {
+            juce::Label* labels[] = { &durationLabel, &velocityLabel, &pitchLabel }; juce::Slider* knobs[] = { &noteDuration, &noteVelocity, &notePitch };
+            place(*labels[n], right + 20, 58 + n * 105, 150, 17); place(*knobs[n], right + 35, 75 + n * 105, 120, 83);
+        }
+        place(deleteNoteButton, right + 18, 382, 154, 31); place(clearPatternButton, right + 18, 422, 154, 31);
+        place(bounceButton, x + 13, utilityPanel.getY() + 27, 150, 31);
+        place(bounceNotice, x + 176, utilityPanel.getY() + 18, middleWidth - 190, 48);
+    } else if (page == Page::Arrange) {
+        library();
+        const int x = 182, right = width - 202, middleWidth = right - x - 12;
+        utilityPanel = { x, 12, middleWidth, 91 };
+        editorPanel = { x, 115, middleWidth, bottom - 224 };
+        inspectorPanel = { right, 12, 190, bottom - 12 };
+        place(contentChoice, x + 12, 52, middleWidth - 158, 31); place(addClipButton, x + middleWidth - 136, 52, 124, 31);
+        place(arrangementViewport, x + 10, 154, middleWidth - 20, editorPanel.getHeight() - 49);
+        const int toolsY = editorPanel.getBottom() + 13;
+        place(trackChoice, x + 12, toolsY + 19, 153, 29); place(importButton, x + 177, toolsY + 19, 116, 29); place(assetButton, x + 305, toolsY + 19, 116, 29);
+        place(loopButton, x + 12, toolsY + 59, 78, 29);
+        loopStart.setTextBoxStyle(juce::Slider::TextBoxAbove, false, 82, 19); loopEnd.setTextBoxStyle(juce::Slider::TextBoxAbove, false, 82, 19);
+        place(loopStart, x + 102, toolsY + 57, 88, 34); place(loopEnd, x + 202, toolsY + 57, 88, 34);
+        place(bounceButton, x + 305, toolsY + 59, 116, 29);
+        place(clipLengthLabel, right + 20, 66, 150, 17); place(clipLength, right + 35, 86, 120, 90);
+        place(clipGainLabel, right + 20, 195, 150, 17); place(clipGain, right + 35, 215, 120, 90);
+        place(clipLoop, right + 18, 330, 154, 31); place(deleteClipButton, right + 18, 373, 154, 31);
     } else if (page == Page::FX) {
-        place(fxBusChoice, left + 4, top, 195, 32); place(fxPresetChoice, left + 212, top, std::min(500, width - 450), 32);
-        const int rackTop = top + 56, rackWidth = 212, panelX = left + 240, panelWidth = right - panelX;
-        for (int s = 0; s < 4; ++s) place(fxSlotButtons[static_cast<std::size_t>(s)], left + 8, rackTop + s * 70, rackWidth - 8, 57);
-        place(fxBypass, left + 8, rackTop + 290, rackWidth - 8, 31);
-        place(fxDescription, panelX + 10, rackTop, panelWidth - 20, 23); place(fxName, panelX + 10, rackTop + 22, panelWidth - 20, 48);
-        place(fxTypeChoice, panelX + 24, rackTop + 91, panelWidth - 174, 31); place(fxMixLabel, right - 129, rackTop + 82, 104, 16); place(fxMix, right - 129, rackTop + 99, 104, 106);
-        const int columns = panelWidth >= 850 ? 6 : 3, knobWidth = (panelWidth - 153) / columns, rowHeight = 116;
-        for (int p = 0; p < 6; ++p) { const int px = panelX + 15 + (p % columns) * knobWidth, py = rackTop + 143 + (p / columns) * rowHeight; place(fxParameterLabels[static_cast<std::size_t>(p)], px, py, knobWidth, 20); place(fxParameters[static_cast<std::size_t>(p)], px + 3, py + 19, knobWidth - 6, 95); }
-        const int hostY = std::max(rackTop + 398, bottom - 132); place(pluginStatus, left + 14, hostY, width - 68, 42);
-        place(pluginManager, left + 15, hostY + 49, 190, 34); place(pluginEditor, left + 215, hostY + 49, 145, 34); place(pluginBypass, left + 370, hostY + 49, 150, 34);
-        place(bounceNotice, left + 15, bottom - 37, width - 70, 28);
+        utilityPanel = { 12, 12, width - 24, 74 };
+        place(fxBusChoice, 27, 43, 205, 30); place(fxPresetChoice, 252, 43, width - 280, 30);
+        const int cartridgeWidth = (width - 48) / 4;
+        for (int s = 0; s < 4; ++s) place(fxSlotButtons[static_cast<std::size_t>(s)], 22 + s * (cartridgeWidth + 4), 123, cartridgeWidth - 10, 46);
+        processorPanel = { 12, 195, width - 24, height - 374 };
+        hostedPanel = { 12, height - 163, width - 24, 129 };
+        place(fxName, 28, 208, 280, 30); place(fxDescription, 318, 208, width - 346, 30);
+        place(fxTypeChoice, 28, 249, 258, 28); place(fxBypass, 300, 249, 126, 28);
+        const int parameterWidth = (width - 184) / 6;
+        for (int p = 0; p < 6; ++p) { const int px = 26 + p * parameterWidth; place(fxParameterLabels[static_cast<std::size_t>(p)], px, 293, parameterWidth - 6, 17); place(fxParameters[static_cast<std::size_t>(p)], px + 3, 313, parameterWidth - 12, std::min(100, processorPanel.getBottom() - 321)); }
+        place(fxMixLabel, width - 139, 278, 112, 17); place(fxMix, width - 139, 299, 112, std::min(110, processorPanel.getBottom() - 307));
+        const int hostY = hostedPanel.getY(), hostWidth = (width - 62) / 4;
+        for (int s = 0; s < 4; ++s) place(hostedSlotButtons[static_cast<std::size_t>(s)], 27 + s * (hostWidth + 5), hostY + 32, hostWidth, 29);
+        place(pluginStatus, 28, hostY + 65, width - 56, 20);
+        place(pluginManager, 28, hostY + 92, 184, 26); place(pluginEditor, 223, hostY + 92, 145, 26); place(pluginBypass, 379, hostY + 92, 153, 26);
     } else {
-        place(launchQuantize, left + 4, top, 150, 29); place(importButton, left + 164, top, 128, 29); place(contentChoice, left + 303, top, 260, 29);
-        const int sceneWidth = 91, gridWidth = right - left - sceneWidth - 8, stripWidth = gridWidth / 8;
-        const int rowHeight = std::clamp((height - 480) / 4, 32, 47), trackY = top + 42, gridY = trackY + 28;
+        utilityPanel = { 12, 12, width - 24, 51 };
+        place(launchQuantize, 26, 25, 158, 27); place(importButton, 197, 25, 120, 27); place(contentChoice, 330, 25, std::min(340, width - 500), 27); place(assetButton, contentChoice.getRight() + 13, 25, 126, 27);
+        const int stripWidth = (width - 200) / 8, stripY = 76, launchY = 124;
+        const int sceneHeight = std::clamp((height - 480) / 4, 32, 45), mixerY = launchY + sceneHeight * 4 + 14, faderY = mixerY + 40;
+        const int gainY = bottom - 79, assignY = bottom - 57, stopY = bottom - 29;
+        performancePanel = { 12, stripY, stripWidth * 8, bottom - stripY };
+        masterPanel = { 22 + stripWidth * 8, stripY, width - 34 - stripWidth * 8, bottom - stripY };
         for (int t = 0; t < 8; ++t) {
-            const int tx = left + t * stripWidth; place(trackButtons[static_cast<std::size_t>(t)], tx + 2, trackY, stripWidth - 4, 25);
-            for (int scene = 0; scene < 4; ++scene) place(*launchCells[static_cast<std::size_t>(t * 4 + scene)], tx, gridY + scene * rowHeight, stripWidth, rowHeight);
+            const auto i = static_cast<std::size_t>(t); const int tx = 12 + t * stripWidth;
+            place(trackButtons[i], tx + 6, 89, stripWidth - 12, 26);
+            for (int scene = 0; scene < 4; ++scene) place(*launchCells[i * 4 + static_cast<std::size_t>(scene)], tx + 5, launchY + scene * sceneHeight, stripWidth - 10, sceneHeight - 3);
+            place(muteButtons[i], tx + 8, mixerY, (stripWidth - 20) / 2, 25); place(soloButtons[i], tx + 12 + (stripWidth - 20) / 2, mixerY, (stripWidth - 20) / 2, 25);
+            place(trackGain[i], tx + 8, faderY, std::max(25, stripWidth / 3 - 3), gainY - faderY - 5);
+            const int knobX = tx + stripWidth / 2, knobWidth = stripWidth / 2 - 8, knobStep = (gainY - faderY) / 3;
+            for (int k = 0; k < 3; ++k) { juce::Slider* knobs[] = { &trackPan[i], &sendA[i], &sendB[i] }; place(*knobs[k], knobX, faderY + k * knobStep, knobWidth, std::min(46, knobStep - 13)); }
+            place(gainLabels[i], tx + 5, gainY, stripWidth - 10, 17); place(crossAssignments[i], tx + 8, assignY, stripWidth - 16, 24);
+            stopTrackButtons[i].setButtonText("STOP"); place(stopTrackButtons[i], tx + 8, stopY, stripWidth - 16, 23);
         }
-        for (int s = 0; s < 4; ++s) place(sceneButtons[static_cast<std::size_t>(s)], left + gridWidth + 8, gridY + s * rowHeight + 3, sceneWidth - 6, rowHeight - 6);
-        const int mixerY = gridY + rowHeight * 4 + 16, masterY = bottom - 58, stripHeight = masterY - mixerY - 13;
-        for (int t = 0; t < 8; ++t) {
-            const auto i = static_cast<std::size_t>(t); const int tx = left + t * stripWidth;
-            place(muteButtons[i], tx + 5, mixerY, (stripWidth - 16) / 2, 26); place(soloButtons[i], tx + 10 + (stripWidth - 16) / 2, mixerY, (stripWidth - 16) / 2, 26);
-            const int faderHeight = std::max(50, stripHeight - 94); place(trackGain[i], tx + 8, mixerY + 35, std::max(25, stripWidth / 3), faderHeight);
-            const int knobX = tx + stripWidth / 2, knobW = std::max(30, stripWidth / 2 - 7);
-            place(trackPan[i], knobX, mixerY + 34, knobW, 38); place(sendA[i], knobX, mixerY + 82, knobW, 38); place(sendB[i], knobX, mixerY + 130, knobW, 38);
-            place(gainLabels[i], tx + 3, mixerY + stripHeight - 51, stripWidth - 6, 18); place(crossAssignments[i], tx + 5, mixerY + stripHeight - 28, stripWidth - 10, 25);
-            place(stopTrackButtons[i], left + gridWidth + 8, mixerY + t * std::max(20, stripHeight / 8), sceneWidth - 6, std::max(18, stripHeight / 8 - 2)); stopTrackButtons[i].setButtonText("STOP " + juce::String(t + 1));
-        }
-        place(crossfader, left + 39, masterY + 13, std::min(360, width / 3), 31); place(masterGain, width / 2 + 12, masterY + 3, 195, 47);
+        const int mx = masterPanel.getX(), mw = masterPanel.getWidth();
+        for (int scene = 0; scene < 4; ++scene) place(sceneButtons[static_cast<std::size_t>(scene)], mx + 12, launchY + scene * sceneHeight, mw - 24, sceneHeight - 4);
+        masterGain.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag); masterGain.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 80, 19);
+        place(masterGain, mx + (mw - 112) / 2, bottom - 248, 112, 106); place(crossfader, mx + 22, bottom - 69, mw - 44, 32);
     }
-    arrangement->updateSize(arrangementViewport.getMaximumVisibleWidth()); pattern->updateSize(patternViewport.getMaximumVisibleWidth());
+    arrangement->updateSize(arrangementViewport.getMaximumVisibleWidth(), arrangementViewport.getMaximumVisibleHeight()); pattern->updateSize(patternViewport.getMaximumVisibleWidth());
 }
 
 void WorkstationComponent::paint(juce::Graphics& g) {
-    g.fillAll(HW::chassis()); const auto bounds = getLocalBounds().toFloat();
-    g.setColour(HW::trim().withAlpha(.25f)); g.drawHorizontalLine(81, 16, static_cast<float>(getWidth() - 16));
-    for (auto point : { juce::Point<float>(9, 10), { static_cast<float>(getWidth() - 9), 10 }, { 9, static_cast<float>(getHeight() - 11) }, { static_cast<float>(getWidth() - 9), static_cast<float>(getHeight() - 11) } }) HW::paintScrew(g, point, 3.2f);
-    legend(g, "TRANSPORT / SEQUENCER", { 22, 4, 290, 15 }, 9);
-    const juce::String heading = page == Page::Arrange ? "SONG ARRANGER" : page == Page::Patterns ? "PATTERN / EVENT EDITOR" : page == Page::FX ? "EFFECTS / INSERT RACK" : "LIVE PERFORMANCE / MIXER";
-    legend(g, heading, { 22, 83, 380, 15 }, 10);
+    g.fillAll(HW::chassis());
+    const auto text = [&](const juce::String& title, juce::Rectangle<int> bounds, float size = 10.f, bool inverse = false, juce::Justification alignment = juce::Justification::centredLeft) {
+        g.setColour(inverse ? HW::lcdInk() : HW::ink()); g.setFont(HW::monoFont(size)); g.drawText(title, bounds, alignment);
+    };
+    const auto module = [&](juce::Rectangle<int> bounds, const juce::String& title, bool dark = false) { if (!bounds.isEmpty()) HW::paintModule(g, bounds.toFloat(), title, dark); };
     if (page == Page::Arrange || page == Page::Patterns) {
-        if (arrangementViewport.isVisible()) HW::paintBezel(g, arrangementViewport.getBounds().toFloat().expanded(4), true);
-        if (patternViewport.isVisible()) HW::paintBezel(g, patternViewport.getBounds().toFloat().expanded(4), true);
-        const auto hint = page == Page::Arrange ? "Double-click: place  |  Drag: move / edge trim  |  Alt-drag: copy" : "Click: draw note  |  Drag: move / edge length  |  Shift-click: delete  |  Pad label: audition";
-        legend(g, hint, { static_cast<float>(getWidth() / 2), 84, static_cast<float>(getWidth() / 2 - 24), 14 }, 9, juce::Justification::centredRight);
-    } else if (page == Page::FX) {
-        const int panelX = 260, top = 156; HW::paintLCD(g, { static_cast<float>(panelX), static_cast<float>(top - 3), static_cast<float>(getWidth() - panelX - 20), 80 });
-        HW::paintBezel(g, { 23, static_cast<float>(top - 2), 214, 326 });
-        legend(g, "FOUR BUILT-IN INSERTS", { 28, static_cast<float>(top - 21), 209, 17 }, 9);
-        const int hostY = pluginStatus.getY(); g.setColour(HW::trim().withAlpha(.4f)); g.drawHorizontalLine(hostY - 9, 28, static_cast<float>(getWidth() - 28));
-    } else {
-        const int gridWidth = getWidth() - 40 - 99, stripWidth = gridWidth / 8;
-        for (int t = 0; t < 8; ++t) {
-            const auto i = static_cast<std::size_t>(t); const int tx = 20 + t * stripWidth; auto area = juce::Rectangle<float>(static_cast<float>(tx + 1), static_cast<float>(muteButtons[i].getY() - 5), static_cast<float>(stripWidth - 2), static_cast<float>(crossAssignments[i].getBottom() - muteButtons[i].getY() + 10));
-            HW::paintBezel(g, area); const int knobX = trackPan[i].getX(), knobWidth = trackPan[i].getWidth();
-            legend(g, "PAN", { static_cast<float>(knobX), static_cast<float>(trackPan[i].getY() - 9), static_cast<float>(knobWidth), 12 }, 8, juce::Justification::centred);
-            legend(g, "SEND A", { static_cast<float>(knobX), static_cast<float>(sendA[i].getY() - 9), static_cast<float>(knobWidth), 12 }, 8, juce::Justification::centred);
-            legend(g, "SEND B", { static_cast<float>(knobX), static_cast<float>(sendB[i].getY() - 9), static_cast<float>(knobWidth), 12 }, 8, juce::Justification::centred);
-            const auto meter = juce::Rectangle<float>(static_cast<float>(trackGain[i].getRight() + 2), static_cast<float>(trackGain[i].getY()), 4, static_cast<float>(trackGain[i].getHeight()));
-            g.setColour(HW::ink().withAlpha(.2f)); g.fillRect(meter); g.setColour(snapshot.trackPeaks[i] > 1 ? HW::red() : HW::lcdInk()); const auto level = std::clamp((juce::Decibels::gainToDecibels(snapshot.trackPeaks[i], -60.f) + 60) / 60, 0.f, 1.f); g.fillRect(meter.withTrimmedTop(meter.getHeight() * (1 - level)));
+        module(libraryPanel, "PATTERN CARTRIDGES");
+        module(inspectorPanel, page == Page::Patterns ? "EVENT PARAMETERS" : "CLIP PARAMETERS");
+        const auto& selectedPattern = state.patterns[static_cast<std::size_t>(state.selectedPattern)];
+        if (page == Page::Patterns) {
+            module(editorPanel, "EVENT SEQUENCER"); module(utilityPanel, "PRINT / RESAMPLE");
+            const int x = editorPanel.getX();
+            text("OUTPUT TRACK", { x + 12, 32, 156, 14 }, 9); text("PATTERN LENGTH", { trackChoice.getRight() + 10, 32, 116, 14 }, 9); text("TIMING GRID", { patternLength.getRight() + 10, 32, 114, 14 }, 9);
+            HW::paintBezel(g, patternViewport.getBounds().toFloat().expanded(4), true);
+            text("P" + juce::String(state.selectedPattern + 1).paddedLeft('0', 2) + "  " + juce::String(selectedPattern.name), { inspectorPanel.getX() + 13, 37, 164, 16 }, 10);
+            text(selectedNoteId ? "SELECTED EVENT" : "DRAW OR SELECT AN EVENT", { inspectorPanel.getX() + 15, 477, 160, 16 }, 9);
+            text("Click grid: draw / drag: move", { inspectorPanel.getX() + 15, 505, 160, 16 }, 8);
+            text("Edge: length / Alt-drag: copy", { inspectorPanel.getX() + 15, 523, 160, 16 }, 8);
+            text("Shift-click: erase / pad: audition", { inspectorPanel.getX() + 15, 541, 160, 16 }, 8);
+        } else {
+            module(utilityPanel, "CLIP CARTRIDGE / PLACE AT PLAYHEAD"); module(editorPanel, "SONG TIMELINE / EIGHT TRACKS");
+            HW::paintBezel(g, arrangementViewport.getBounds().toFloat().expanded(4), true);
+            const int toolsY = editorPanel.getBottom() + 13, x = editorPanel.getX();
+            HW::paintBezel(g, { static_cast<float>(x), static_cast<float>(toolsY - 1), static_cast<float>(editorPanel.getWidth()), 103.f });
+            text("DESTINATION", { x + 12, toolsY + 1, 153, 14 }, 9); text("LOOP IN", { x + 102, toolsY + 45, 88, 13 }, 8); text("LOOP OUT", { x + 202, toolsY + 45, 88, 13 }, 8);
+            text("Double-click: place clip", { inspectorPanel.getX() + 15, 452, 160, 16 }, 9); text("Drag: move / edge: trim", { inspectorPanel.getX() + 15, 477, 160, 16 }, 9); text("Alt-drag: duplicate", { inspectorPanel.getX() + 15, 502, 160, 16 }, 9);
+            if (const auto* clip = selectedClip()) text("TRACK " + juce::String(clip->track + 1) + " / BEAT " + juce::String(clip->startBeat, 2), { inspectorPanel.getX() + 13, 39, 164, 16 }, 9);
         }
-        legend(g, "A", { static_cast<float>(crossfader.getX() - 19), static_cast<float>(crossfader.getY()), 18, 30 }, 13); legend(g, "B", { static_cast<float>(crossfader.getRight() + 5), static_cast<float>(crossfader.getY()), 18, 30 }, 13);
-        legend(g, "CROSSFADER", { static_cast<float>(crossfader.getX()), static_cast<float>(crossfader.getY() - 13), static_cast<float>(crossfader.getWidth()), 14 }, 9, juce::Justification::centred);
-        legend(g, "MASTER", { static_cast<float>(masterGain.getX() - 65), static_cast<float>(masterGain.getY()), 64, 40 }, 10);
-        const auto meter = juce::Rectangle<float>(static_cast<float>(getWidth() - 248), static_cast<float>(masterGain.getY() + 10), 206, 16); g.setColour(HW::ink()); g.fillRect(meter); const auto level = std::clamp((juce::Decibels::gainToDecibels(engine.peakLevel(), -60.f) + 60) / 60, 0.f, 1.f); g.setColour(engine.peakLevel() > 1 ? HW::red() : HW::lcd()); g.fillRect(meter.reduced(2).withWidth((meter.getWidth() - 4) * level));
-        legend(g, capture.recording ? "RECORDING  " + juce::String(static_cast<juce::int64>(capture.frames)) + " frames" : "LIVE STEREO BUS", { meter.getX(), meter.getBottom() + 1, meter.getWidth(), 18 }, 9, juce::Justification::centred);
+    } else if (page == Page::FX) {
+        module(utilityPanel, "PATCH BAY / TARGET BUS + CHAIN PRESET");
+        const int cartridgeWidth = (getWidth() - 48) / 4;
+        for (int s = 0; s < 4; ++s) { const int x = 16 + s * (cartridgeWidth + 4); module({ x, 98, cartridgeWidth + 2, 82 }, "BUILT-IN PROCESSOR " + juce::String(s + 1)); if (s < 3) text(">", { x + cartridgeWidth - 2, 130, 17, 22 }, 14); }
+        module(processorPanel, "PROCESSOR CONTROL"); module(hostedPanel, "EXTERNAL INSERT BAY / AU + VST3 / FOUR SLOTS");
+        HW::paintLCD(g, { 22.f, 203.f, static_cast<float>(getWidth() - 44), 37.f });
+        text("PROCESSOR MODEL", { 30, 277, 245, 13 }, 8);
+        if (pluginBus() < 0) text("SELECT A TRACK OR MASTER TO LOAD EXTERNAL PLUG-INS", { 548, hostedPanel.getY() + 95, getWidth() - 576, 19 }, 9);
+    } else {
+        module(utilityPanel, ""); module(masterPanel, "SCENE / MASTER");
+        const int stripWidth = performancePanel.getWidth() / 8;
+        for (int t = 0; t < 8; ++t) {
+            const auto i = static_cast<std::size_t>(t); const int tx = performancePanel.getX() + t * stripWidth;
+            HW::paintBezel(g, { static_cast<float>(tx + 1), static_cast<float>(performancePanel.getY()), static_cast<float>(stripWidth - 2), static_cast<float>(performancePanel.getHeight()) });
+            g.setColour(trackColour(t)); g.fillRect(tx + 7, 79, stripWidth - 14, 3);
+            const auto knobText = [&](juce::Slider& knob, const char* title) { text(title, { knob.getX() - 2, knob.getY() - 12, knob.getWidth() + 4, 11 }, 8, false, juce::Justification::centred); };
+            knobText(trackPan[i], "PAN"); knobText(sendA[i], "SEND A"); knobText(sendB[i], "SEND B");
+            const auto meter = juce::Rectangle<float>(static_cast<float>(trackGain[i].getRight() + 3), static_cast<float>(trackGain[i].getY() + 4), 4.f, static_cast<float>(trackGain[i].getHeight() - 8));
+            g.setColour(HW::graphite()); g.fillRect(meter); g.setColour(snapshot.trackPeaks[i] > 1 ? HW::red() : HW::lcdInk()); const auto level = std::clamp((juce::Decibels::gainToDecibels(snapshot.trackPeaks[i], -60.f) + 60) / 60, 0.f, 1.f); g.fillRect(meter.withTrimmedTop(meter.getHeight() * (1 - level)));
+        }
+        const int mx = masterPanel.getX(), mw = masterPanel.getWidth(), bottom = getHeight() - 34;
+        text("MASTER LEVEL", { mx + 15, bottom - 265, mw - 30, 17 }, 10, false, juce::Justification::centred);
+        const auto meter = juce::Rectangle<float>(static_cast<float>(mx + 19), static_cast<float>(bottom - 124), static_cast<float>(mw - 38), 15.f);
+        g.setColour(HW::graphite()); g.fillRect(meter); const auto level = std::clamp((juce::Decibels::gainToDecibels(engine.peakLevel(), -60.f) + 60) / 60, 0.f, 1.f); g.setColour(engine.peakLevel() > 1 ? HW::red() : HW::lcd()); g.fillRect(meter.reduced(2).withWidth((meter.getWidth() - 4) * level));
+        text(capture.recording ? "MIX RECORDING" : "STEREO OUTPUT", { mx + 15, bottom - 104, mw - 30, 17 }, 8, false, juce::Justification::centred);
+        text("A       CROSSFADE       B", { mx + 10, bottom - 85, mw - 20, 15 }, 9, false, juce::Justification::centred);
     }
+    g.setColour(HW::trim().withAlpha(.45f)); g.drawHorizontalLine(getHeight() - 30, 15.f, static_cast<float>(getWidth() - 15));
     if (busy) { g.setColour(HW::amber()); g.fillEllipse(getWidth() - 21.f, getHeight() - 21.f, 7, 7); }
-    juce::ignoreUnused(bounds);
 }
 
 void WorkstationComponent::timerCallback() {
@@ -743,7 +794,8 @@ bool WorkstationComponent::keyPressed(const juce::KeyPress& key) {
 
 juce::var WorkstationComponent::runWorkflowSmoke() {
     if (busy) throw std::runtime_error("Workstation is busy before workflow smoke.");
-    auto* result = new juce::DynamicObject();
+    juce::var resultOwner(new juce::DynamicObject());
+    auto* result = resultOwner.getDynamicObject();
     auto check = [result](const char* name, bool ok) { result->setProperty(name, ok); if (!ok) throw std::runtime_error(std::string("Workstation UI workflow failed: ") + name); };
     stopTransport(); engine.stopMasterCapture(); state = WorkstationState(); undoStack.clear(); redoStack.clear(); selectedNoteId = selectedClipId = 0; publish();
     selectPattern(0); addNote({ 0, 0, 0, .25, .9f, 0 });
@@ -787,6 +839,67 @@ juce::var WorkstationComponent::runWorkflowSmoke() {
     fxParameters[0].setValue(.37, juce::sendNotificationSync); fxBypass.onClick(); check("fx_parameter_and_bypass", std::abs(effectRack()[0].parameters[0] - .37f) < .001f && effectRack()[0].bypass);
     applyPreset(0); check("fx_chain_preset", effectRack()[0].type == fxPresets()[0].slots[0].type && effectRack()[3].mix == fxPresets()[0].slots[3].mix);
     setTempo(112); check("shared_host_tempo", state.tempo == 112);
+    // Exercise the controls in the new console at both supported content sizes.
+    // A visible control must be wholly reachable inside this page, including the
+    // last pattern, last channel, and last hosted insert, not just the first item.
+    const auto originalBounds = getBounds(); const auto originalPage = page;
+    const auto stateBeforeLayout = state; const auto undoBeforeLayout = undoStack; const auto redoBeforeLayout = redoStack;
+    const auto reachable = [this](const juce::Component& c) { return c.isVisible() && c.getWidth() >= 23 && c.getHeight() >= 20 && getLocalBounds().contains(c.getBounds()); };
+    const auto allVisibleControlsFit = [this] { for (auto* child : getChildren()) if (child->isVisible() && !getLocalBounds().contains(child->getBounds())) return false; return true; };
+    for (const auto size : { juce::Point<int>(980, 620), juce::Point<int>(1230, 710) }) {
+        setSize(size.x, size.y);
+        const auto suffix = size.x == 980 ? "_compact" : "_normal";
+        const auto layoutCheck = [&](const juce::String& name, bool ok) { const auto key = (name + suffix).toStdString(); check(key.c_str(), ok); };
+        showPage(Page::Patterns); selectPattern(0); selectNote(state.patterns[0].notes.front().id);
+        bool cartridgesReachable = true;
+        for (int p = 0; p < 16; ++p) cartridgesReachable = cartridgesReachable && reachable(patternButtons[static_cast<std::size_t>(p)]) && (p == 0 || patternButtons[static_cast<std::size_t>(p)].getY() > patternButtons[static_cast<std::size_t>(p - 1)].getBottom());
+        layoutCheck("pattern_cartridges_and_event_controls_reachable", cartridgesReachable && reachable(patternViewport) && reachable(noteDuration) && reachable(noteVelocity) && reachable(notePitch) && reachable(deleteNoteButton) && noteVelocity.isEnabled() && !arrangementViewport.isVisible() && allVisibleControlsFit());
+        patternButtons[15].onClick(); layoutCheck("last_pattern_cartridge_selects_pattern_16", state.selectedPattern == 15); patternButtons[0].onClick();
+        showPage(Page::Arrange); if (!state.arrangement.empty()) selectClip(state.arrangement.front().id);
+        layoutCheck("song_timeline_and_clip_controls_reachable", reachable(arrangementViewport) && !patternViewport.isVisible() && reachable(contentChoice) && reachable(addClipButton) && reachable(trackChoice) && reachable(clipLength) && reachable(clipGain) && reachable(clipLoop) && reachable(loopStart) && reachable(loopEnd) && reachable(importButton) && reachable(assetButton) && allVisibleControlsFit());
+        showPage(Page::FX); fxBusChoice.setSelectedId(1, juce::sendNotificationSync);
+        bool insertsReachable = true;
+        for (int slot = 0; slot < 4; ++slot) insertsReachable = insertsReachable && reachable(fxSlotButtons[static_cast<std::size_t>(slot)]) && reachable(hostedSlotButtons[static_cast<std::size_t>(slot)]) && hostedSlotButtons[static_cast<std::size_t>(slot)].isEnabled() && (slot == 0 || fxSlotButtons[static_cast<std::size_t>(slot)].getX() > fxSlotButtons[static_cast<std::size_t>(slot - 1)].getRight());
+        fxSlotButtons[3].onClick(); hostedSlotButtons[3].onClick();
+        layoutCheck("four_processor_and_hosted_slots_reachable", insertsReachable && fxSlot == 3 && reachable(fxTypeChoice) && reachable(fxPresetChoice) && reachable(fxMix) && reachable(pluginManager) && reachable(pluginEditor) && reachable(pluginBypass) && allVisibleControlsFit());
+        fxBusChoice.setSelectedId(11, juce::sendNotificationSync); layoutCheck("send_b_rack_is_accessible_without_hosted_inserts", fxBus == 10 && !pluginManager.isEnabled() && !hostedSlotButtons[3].isEnabled() && reachable(fxSlotButtons[3])); fxBusChoice.setSelectedId(1, juce::sendNotificationSync); fxSlotButtons[0].onClick();
+        showPage(Page::Perform); bool channelsReachable = true;
+        for (int t = 0; t < 8; ++t) {
+            const auto i = static_cast<std::size_t>(t);
+            for (const auto* c : std::initializer_list<const juce::Component*> { &trackButtons[i], &trackGain[i], &trackPan[i], &sendA[i], &sendB[i], &muteButtons[i], &soloButtons[i], &crossAssignments[i], &stopTrackButtons[i] }) channelsReachable = channelsReachable && reachable(*c);
+            for (int scene = 0; scene < 4; ++scene) channelsReachable = channelsReachable && reachable(*launchCells[i * 4 + static_cast<std::size_t>(scene)]);
+        }
+        for (const auto& scene : sceneButtons) channelsReachable = channelsReachable && reachable(scene);
+        layoutCheck("eight_channels_four_scenes_and_master_reachable", channelsReachable && reachable(launchQuantize) && reachable(contentChoice) && reachable(masterGain) && reachable(crossfader) && allVisibleControlsFit());
+        layoutCheck("page_transport_is_owned_by_global_dock", !playButton.isVisible() && !stopButton.isVisible() && !tempo.isVisible() && !noteRecord.isVisible() && !masterRecord.isVisible() && !undoButton.isVisible() && !redoButton.isVisible());
+    }
+    // Actual mouse gestures verify that moving controls into separate modules did
+    // not sever the editor callback path. Keep this temporary cartridge out of
+    // the screenshot fixture and the user's undo history.
+    setSize(980, 620); showPage(Page::Patterns); patternButtons[15].onClick(); patternLength.setSelectedId(1, juce::sendNotificationSync);
+    // The earlier quantization check leaves the editor at 1/8. These gestures
+    // intentionally create a three-sixteenth note, so select its timing grid.
+    recordQuantize.setSelectedId(4, juce::sendNotificationSync);
+    const auto event = [&](juce::Component* target, juce::Point<float> position, juce::Point<float> start, juce::ModifierKeys mods, int clicks = 1, bool drag = false) { return juce::MouseEvent(source, position, mods, 1, 0, 0, 0, 0, target, target, now, start, now, clicks, drag); };
+    const juce::Point<float> drawAt(111, 29); pattern->mouseDown(event(pattern.get(), drawAt, drawAt, modifiers)); pattern->mouseUp(event(pattern.get(), drawAt, drawAt, modifiers));
+    check("pattern_canvas_mouse_draw", selectedNote() && state.patterns[15].notes.size() == 1 && selectedNote()->beat == .5);
+    const juce::Point<float> moveAt(113, 29), moveTo(209, 49); pattern->mouseDown(event(pattern.get(), moveAt, moveAt, modifiers)); pattern->mouseDrag(event(pattern.get(), moveTo, moveAt, modifiers, 1, true)); pattern->mouseUp(event(pattern.get(), moveTo, moveAt, modifiers, 1, true));
+    check("pattern_canvas_mouse_move", selectedNote() && selectedNote()->pad == 1 && selectedNote()->beat == 2.5);
+    const juce::Point<float> trimAt(217, 49), trimTo(241, 49); pattern->mouseDown(event(pattern.get(), trimAt, trimAt, modifiers)); pattern->mouseDrag(event(pattern.get(), trimTo, trimAt, modifiers, 1, true)); pattern->mouseUp(event(pattern.get(), trimTo, trimAt, modifiers, 1, true));
+    check("pattern_canvas_mouse_resize", selectedNote() && selectedNote()->duration == .75);
+    const auto alt = modifiers.withFlags(juce::ModifierKeys::altModifier); const juce::Point<float> copyAt(209, 49), copyTo(233, 69); pattern->mouseDown(event(pattern.get(), copyAt, copyAt, alt)); pattern->mouseDrag(event(pattern.get(), copyTo, copyAt, alt, 1, true)); pattern->mouseUp(event(pattern.get(), copyTo, copyAt, alt, 1, true));
+    check("pattern_canvas_mouse_copy", state.patterns[15].notes.size() == 2 && selectedNote() && selectedNote()->beat == 3 && selectedNote()->pad == 2);
+    state.arrangement.clear(); selectedClipId = 0; publish(); showPage(Page::Arrange);
+    const int row = std::max(34, (arrangementViewport.getMaximumVisibleHeight() - 22) / 8); const juce::Point<float> placeAt(158, static_cast<float>(24 + row * 4 + 8));
+    arrangement->mouseDown(event(arrangement.get(), placeAt, placeAt, modifiers, 2)); arrangement->mouseUp(event(arrangement.get(), placeAt, placeAt, modifiers, 2));
+    check("song_canvas_mouse_place", state.arrangement.size() == 1 && selectedClip() && selectedClip()->track == 4 && selectedClip()->startBeat == 2);
+    const juce::Point<float> clipMoveAt(163, placeAt.y), clipMoveTo(211, placeAt.y + row); arrangement->mouseDown(event(arrangement.get(), clipMoveAt, clipMoveAt, modifiers)); arrangement->mouseDrag(event(arrangement.get(), clipMoveTo, clipMoveAt, modifiers, 1, true)); arrangement->mouseUp(event(arrangement.get(), clipMoveTo, clipMoveAt, modifiers, 1, true));
+    check("song_canvas_mouse_move", selectedClip() && selectedClip()->track == 5 && selectedClip()->startBeat == 4);
+    const juce::Point<float> clipTrimAt(300, clipMoveTo.y), clipTrimTo(348, clipMoveTo.y); arrangement->mouseDown(event(arrangement.get(), clipTrimAt, clipTrimAt, modifiers)); arrangement->mouseDrag(event(arrangement.get(), clipTrimTo, clipTrimAt, modifiers, 1, true)); arrangement->mouseUp(event(arrangement.get(), clipTrimTo, clipTrimAt, modifiers, 1, true));
+    check("song_canvas_mouse_resize", selectedClip() && selectedClip()->lengthBeats == 6);
+    const juce::Point<float> clipCopyAt(211, clipMoveTo.y), clipCopyTo(259, clipMoveTo.y + row); arrangement->mouseDown(event(arrangement.get(), clipCopyAt, clipCopyAt, alt)); arrangement->mouseDrag(event(arrangement.get(), clipCopyTo, clipCopyAt, alt, 1, true)); arrangement->mouseUp(event(arrangement.get(), clipCopyTo, clipCopyAt, alt, 1, true));
+    check("song_canvas_mouse_copy", state.arrangement.size() == 2 && selectedClip() && selectedClip()->startBeat == 6 && selectedClip()->track == 6);
+    state = stateBeforeLayout; undoStack = undoBeforeLayout; redoStack = redoBeforeLayout; selectedNoteId = selectedClipId = 0; fxBus = fxSlot = 0; setBounds(originalBounds); page = originalPage; publish(); resized();
     // A useful screenshot fixture is only installed by this explicit smoke command.
     edit([](auto& s) {
         for (int p = 0; p < 4; ++p) { auto& pattern = s.patterns[static_cast<std::size_t>(p)]; pattern.name = p == 0 ? "DUSTY BREAK" : p == 1 ? "BASS MOTION" : p == 2 ? "CHORD MEMORY" : "TOPLINE"; pattern.lengthBeats = 16; pattern.notes.clear(); for (int step = 0; step < 32; ++step) if (step % (p + 2) == 0 || step % 8 == 3) addPatternNote(s, p, { 0, (step % 4) + p * 4, step * .5, p == 2 ? 1.5 : .25, step % 8 == 0 ? .95f : .68f, p == 1 ? -12.f : 0.f }); }
@@ -801,6 +914,6 @@ juce::var WorkstationComponent::runWorkflowSmoke() {
         snapshot = engine.workstationSnapshot(); check("offline_callback_stops_workstation", !snapshot.playing && !snapshot.recording);
     }
     check("smoke_fixture_is_valid", (validateWorkstation(state), state.arrangement.size() >= 16 && state.patterns[0].notes.size() >= 8));
-    status = "Studio ready. Pattern notes, arranged clips, launch slots and built-in effects are editable."; refresh(); resized(); return juce::var(result);
+    status = "Studio ready. Pattern notes, arranged clips, launch slots and built-in effects are editable."; refresh(); resized(); return resultOwner;
 }
 } // namespace samplify

@@ -1,5 +1,10 @@
 # Serato Sample 2.x reference and acceptance contract
 
+Version 0.4 retains the sampler behavior described here and replaces the former
+Serato-shaped presentation with a hardware console. The manual is a feature
+reference; the current visual layout follows the
+[hardware UI acceptance checklist](UI_REDESIGN_ACCEPTANCE.md).
+
 This document specifies the rebuild against Serato's current public Sample
 manual and annotated interface. It is an acceptance contract, not a declaration
 that Samplify has achieved feature, visual, or audio equivalence. A passing

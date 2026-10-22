@@ -1,19 +1,26 @@
 # Samplify by MP Audio
 
-Samplify 0.3 is a standalone native macOS sampling workstation with a beige
-hardware-style panel, green LCD displays, rubber pads and physical-style controls.
-Its sampler follows the documented Serato Sample 2.x workflow: 32 cues, source
-and waveform editing, five Autoset modes, chromatic performance and native
-four-stem isolation. Patterns, arrangement, effects and live performance share
-that sampler and save together in a studio session.
+Samplify 0.4 is a standalone native macOS sampling workstation built around a
+classic hardware console. A vertical mode rail selects five work surfaces; a
+permanent transport dock keeps the shared clock, pattern memory and recorders
+available. The sampler has sixteen square performance pads in two banks,
+a separate sample deck, and five focused editing modules. Song assembly,
+pattern writing, effects and live mixing each have their own panel layout.
+
+The existing sampler and studio engines are retained: 32 cues, source and grid
+editing, five Autoset modes, chromatic performance, native four-stem isolation,
+pattern recording, arrangement, built-in effects, AU/VST3 hosting and live mix
+capture. Everything saves together in a studio session.
 
 ![Samplify hardware-style sampler](docs/Samplify.png)
 
 The downloadable releases include screenshots captured from the actual native
-macOS app, plus the checked controller and neural-stem workflow report. Source
-screenshots: [Arrange](docs/Samplify-arrange.png),
-[Patterns](docs/Samplify-patterns.png), [FX Rack](docs/Samplify-fx.png) and
-[Perform](docs/Samplify-perform.png).
+macOS app, plus the checked controller and neural-stem workflow report.
+Development captures: [Song](docs/Samplify-arrange.png),
+[Patterns](docs/Samplify-patterns.png), [FX Rack](docs/Samplify-fx.png),
+[Perform](docs/Samplify-perform.png), [Bank B](docs/Samplify-bank-b.png),
+[Envelope](docs/Samplify-envelope.png), [Stems](docs/Samplify-stems.png) and
+[Grid](docs/Samplify-grid.png).
 
 The [official Serato Sample manual](https://support.serato.com/hc/en-us/sections/115000138014-User-manual)
 is the behavioral reference. The [reference and acceptance matrix](docs/SERATO_PARITY.md)
@@ -56,7 +63,7 @@ build overrides are detailed in [deployment instructions](docs/DEPLOYMENT.md).
 
 ## Sampling workflow
 
-1. Choose **Load Audio File**, or drop WAV, AIFF, FLAC, or MP3 onto the window.
+1. Choose **Load Audio**, or drop WAV, AIFF, FLAC, or MP3 onto the window.
    Loading starts with 32 empty cues. Audition the source with **Space**, seek in
    the overview, and zoom into the detailed waveform.
 2. Click an empty pad or play its assigned key to create a cue at the playhead.
@@ -67,14 +74,15 @@ build overrides are detailed in [deployment instructions](docs/DEPLOYMENT.md).
    **Set Random**, **Key Shift Pad**, or embedded **Serato DJ** hotcues. Favorites
    survive Autoset. Slicer starts at the current playhead; Key Shift Pad starts
    from the selected cue.
-4. Select one cue or a group and adjust level, filter, attack/release, key shift,
+4. Use **Trim**, **Tune**, **Envelope**, **Stems** and **Grid** to focus the sample deck.
+   Select one cue or a group and adjust level, filter, attack/release, key shift,
    time stretch, reverse, and routing options. Rename or favorite cues,
    drag to move/swap them, or Alt-drag to copy. Undo and redo retain 100 actions.
 5. Choose **Hold** or **Trigger**, **Mono** or **Poly**, velocity, and keyboard
    mode for performance. Keyboard mode plays the selected cue chromatically;
    glide offers Trigger and Sustain behavior. Pitch/time processing keeps pitch
    and speed independent; bypass uses varispeed.
-6. Click **Vocals**, **Melody**, **Bass**, or **Drums** to isolate a stem mix.
+6. Open the **Stems** module and click **Vocals**, **Melody**, **Bass**, or **Drums** to isolate a stem mix.
    The first use separates the source in a cancellable background task and
    caches aligned stems as unclipped 32-bit float WAV. Click to mute or Shift-click to solo. Stem choices can
    apply globally or to selected cues, and the waveform follows the audible mix.
@@ -82,7 +90,7 @@ build overrides are detailed in [deployment instructions](docs/DEPLOYMENT.md).
    processed 24-bit WAV files.
 
 The computer keyboard uses the piano-style sequence `A W S E D F T G Y H U J K O L P`
-for the first 16 cue slots. MIDI notes **24–55** address all 32 slots; keyboard
+for the sixteen cue slots in the visible **A / B** bank. MIDI notes **24–55** address all 32 slots; keyboard
 mode instead transposes the selected cue. **Space** plays/pauses source audition,
 **Command-Z / Command-Shift-Z** undo/redo, **Command-A** selects occupied cues,
 **Delete** removes selected cues, and **+ / −** zoom the waveform. Use
@@ -90,8 +98,12 @@ mode instead transposes the selected cue. **Space** plays/pauses source audition
 
 ## Record, arrange, process and perform
 
-The top row switches between **Sampler**, **Arrange**, **Patterns**, **FX Rack**
-and **Perform**. Open and Save retain the whole studio, including plugin state.
+The left mode rail selects **Sample**, **Song**, **Pattern**, **Effects** and
+**Perform**. Open and Save retain the whole studio, including plugin state.
+The bottom dock contains the shared tempo, pattern selector, Play, Stop,
+Rec Notes, Rec Mix and context-sensitive Undo/Redo. Source audition stays on
+the sampling deck. The [UI acceptance checklist](docs/UI_REDESIGN_ACCEPTANCE.md)
+tracks feature retention and the new console layout.
 
 - **Patterns:** select one of 16 patterns and a destination track, set its length
   and recording grid, arm **Rec Notes**, then play the sampler pads or MIDI input.

@@ -14,7 +14,7 @@ const juce::Colour black(0xff29362b), top(0xffd6cbb5), strip(0xffbfb6a3), grey(0
 constexpr const char* stemNames[] { "VOCALS", "MELODY", "BASS", "DRUMS" };
 constexpr const char* typingKeys = "awsedftgyhujkolp";
 juce::Font face(float size, bool bold = false) { return juce::Font(juce::FontOptions(size, bold ? juce::Font::bold : juce::Font::plain)); }
-void referenceLabel(juce::Graphics& g, const juce::String& s, juce::Rectangle<float> r, float size, juce::Colour colour = grey, int alignment = juce::Justification::centred) {
+void moduleLabel(juce::Graphics& g, const juce::String& s, juce::Rectangle<float> r, float size, juce::Colour colour = grey, int alignment = juce::Justification::centred) {
     g.setColour(colour); g.setFont(face(size)); g.drawText(s, r, alignment);
 }
 juce::String formattedKey(const std::string& key, int offset, int format) {
@@ -40,7 +40,7 @@ int bitCount(std::uint32_t mask) { int n = 0; for (; mask; mask &= mask - 1) ++n
 void restoreGrid(Project& target, const Project& from) { target.sourceBpm = from.sourceBpm; target.tempoMarkers = from.tempoMarkers; target.beatgridEnabled = from.beatgridEnabled; }
 }
 
-class MainComponent::ReferenceLookAndFeel final : public HardwareLookAndFeel {
+class MainComponent::SamplerLookAndFeel final : public HardwareLookAndFeel {
 public:
     void drawButtonText(juce::Graphics& g, juce::TextButton& b, bool over, bool down) override {
         const auto icon = b.getProperties().getWithDefault("icon", "").toString();
@@ -83,12 +83,12 @@ public:
 class ModeButton final : public juce::Button {
 public:
     ModeButton(juce::String first, juce::String second) : Button(first), upper(std::move(first)), lower(std::move(second)) { setClickingTogglesState(true); }
-    void paintButton(juce::Graphics& g, bool over, bool) override {
-        g.setColour(juce::Colour(over ? 0xffded6c5 : 0xffc5bcaa)); g.fillRoundedRectangle(getLocalBounds().toFloat(), 2);
-        auto area = getLocalBounds().toFloat().reduced(3);
-        const float fs = juce::jlimit(9.f, 17.f, getHeight() * .25f);
-        referenceLabel(g, upper, area.removeFromTop(area.getHeight() * .5f), fs, getToggleState() ? black : grey);
-        referenceLabel(g, lower, area, fs, getToggleState() ? grey : black);
+    void paintButton(juce::Graphics& g, bool over, bool down) override {
+        auto r = getLocalBounds().toFloat().reduced(1);
+        g.setColour(down ? HardwareLookAndFeel::panel().darker(.12f) : over ? HardwareLookAndFeel::panel().brighter(.08f) : HardwareLookAndFeel::panel());
+        g.fillRoundedRectangle(r, 3); g.setColour(HardwareLookAndFeel::trim()); g.drawRoundedRectangle(r, 3, 1);
+        g.setColour(HardwareLookAndFeel::amber()); g.fillEllipse(r.getX() + 6, r.getCentreY() - 2, 4, 4);
+        moduleLabel(g, getToggleState() ? upper : lower, r.withTrimmedLeft(11), 10, HardwareLookAndFeel::ink());
     }
 private:
     juce::String upper, lower;
@@ -102,7 +102,7 @@ public:
         const auto colour = getToggleState() ? grey.withAlpha(.4f) : black;
         g.setColour(colour.withMultipliedAlpha(isEnabled() ? 1.f : .3f));
         const float w = static_cast<float>(getWidth()), h = static_cast<float>(getHeight());
-        const float cx = w * .5f, cy = h * .43f, unit = std::min(w, h) * .34f;
+        const float cx = w * .5f, cy = h * .36f, unit = std::min(w, h) * .24f;
         if (index == 0) {
             g.fillRoundedRectangle(cx - unit * .25f, cy - unit * .6f, unit * .5f, unit, unit * .25f);
             g.drawRoundedRectangle(cx - unit * .43f, cy - unit * .18f, unit * .86f, unit * .86f, unit * .4f, 1.5f);
@@ -123,6 +123,7 @@ public:
             g.drawLine(cx - unit * .7f, cy - unit * .8f, cx + unit * .2f, cy - unit * .1f, 2);
             g.drawLine(cx + unit * .8f, cy - unit * .8f, cx - unit * .2f, cy - unit * .1f, 2);
         }
+        moduleLabel(g, stemNames[index], { 2, h - 23, w - 4, 18 }, 10, colour);
     }
 private: int index;
 };
@@ -136,21 +137,23 @@ public:
     std::function<void(int)> onRelease, onRename;
     std::function<void(int, int, bool)> onMove;
     void paint(juce::Graphics& g) override {
-        const auto r = getLocalBounds().toFloat().reduced(2);
-        const auto cue = pad.empty() ? HardwareLookAndFeel::trim() : juce::Colour(pad.colour);
-        auto rubber = active ? juce::Colour(0xff646d5a) : juce::Colour(0xff474b43);
-        g.setColour(juce::Colour(0xff666557)); g.fillRoundedRectangle(r.translated(0, 2), 5);
-        g.setGradientFill(juce::ColourGradient(rubber.brighter(.12f), r.getX(), r.getY(), rubber.darker(.12f), r.getX(), r.getBottom(), false));
-        g.fillRoundedRectangle(r, 5);
-        g.setColour(juce::Colour(0xff252d25)); g.drawRoundedRectangle(r, 5, 1);
-        if (selected || dragOver) { g.setColour(HardwareLookAndFeel::amber()); g.drawRoundedRectangle(r.reduced(1), 4, dragOver ? 2.5f : 1.8f); }
-        g.setColour(cue.withAlpha(pad.empty() ? .3f : 1.f)); g.fillRoundedRectangle(r.getX() + 8, r.getY() + 7, 19, 3, 1);
-        const float fs = std::max(9.f, std::min(14.f, getHeight() * .22f));
-        const auto text = HardwareLookAndFeel::chassis().brighter(.14f);
-        referenceLabel(g, juce::String(index + 1).paddedLeft('0', 2), {r.getX() + 7, r.getY() + 12, 24, r.getHeight() - 16}, fs, text.withAlpha(.6f));
-        if (!pad.name.empty()) referenceLabel(g, pad.name, r.reduced(35, 5).withTrimmedRight(2), fs, text, juce::Justification::centredLeft);
-        if (pad.favorite) { g.setColour(HardwareLookAndFeel::amber()); juce::Path star; star.addStar({r.getRight() - 12, r.getY() + 10}, 5, 2.5f, 5); g.fillPath(star); }
-        if (index < 16) referenceLabel(g, juce::String::charToString(typingKeys[index]).toUpperCase(), {r.getRight() - 22, r.getBottom() - 23, 18, 18}, fs - 1, text.withAlpha(.65f));
+        using H = HardwareLookAndFeel;
+        auto socket = getLocalBounds().toFloat().reduced(1);
+        g.setColour(H::graphite().darker(.35f)); g.fillRoundedRectangle(socket, 8);
+        const auto r = socket.reduced(4).translated(0, active ? 1.f : 0.f);
+        const auto rubber = active ? H::graphite().brighter(.22f) : H::graphite();
+        g.setColour(H::ink().withAlpha(.45f)); g.fillRoundedRectangle(r.translated(0, 2), 6);
+        g.setGradientFill(juce::ColourGradient(rubber.brighter(.07f), r.getX(), r.getY(), rubber.darker(.09f), r.getX(), r.getBottom(), false)); g.fillRoundedRectangle(r, 6);
+        g.setColour(H::chassis().withAlpha(.1f)); g.drawRoundedRectangle(r.reduced(.5f), 6, 1);
+        if (selected || dragOver || active) { g.setColour(H::amber().withAlpha(active || dragOver ? 1.f : .8f)); g.drawRoundedRectangle(r.reduced(1), 5, active || dragOver ? 2.2f : 1.4f); }
+        const auto ink = H::chassis().brighter(.12f);
+        const auto accent = pad.empty() ? H::trim() : juce::Colour(pad.colour);
+        g.setColour(accent.withAlpha(pad.empty() ? .45f : 1.f)); g.fillRoundedRectangle(r.getX() + 10, r.getY() + 10, 21, 3, 1);
+        moduleLabel(g, juce::String(index / 16 == 0 ? "A" : "B") + juce::String(index % 16 + 1).paddedLeft('0', 2), {r.getX() + 10, r.getY() + 19, r.getWidth() - 20, 16}, 10, ink.withAlpha(.55f), juce::Justification::centredLeft);
+        moduleLabel(g, juce::String(index % 16 + 1).paddedLeft('0', 2), r.withTrimmedTop(r.getHeight() * .26f).withHeight(r.getHeight() * .4f), std::clamp(r.getHeight() * .3f, 22.f, 40.f), ink.withAlpha(pad.empty() ? .3f : .9f));
+        moduleLabel(g, pad.empty() ? "EMPTY" : pad.name.empty() ? "CUE " + juce::String(index + 1) : juce::String(pad.name), {r.getX() + 8, r.getBottom() - 29, r.getWidth() - 31, 17}, 9, ink.withAlpha(.7f), juce::Justification::centredLeft);
+        moduleLabel(g, juce::String::charToString(typingKeys[index % 16]).toUpperCase(), {r.getRight() - 22, r.getBottom() - 28, 15, 17}, 10, ink.withAlpha(.48f));
+        if (pad.favorite) { juce::Path star; star.addStar({r.getRight() - 14, r.getY() + 14}, 5, 2.5f, 5); g.setColour(H::amber()); g.fillPath(star); }
     }
     void mouseDown(const juce::MouseEvent& e) override {
         dragging = false;
@@ -174,14 +177,14 @@ private: bool dragging = false;
 };
 
 MainComponent::MainComponent() {
-    theme = std::make_unique<ReferenceLookAndFeel>(); setLookAndFeel(theme.get());
+    theme = std::make_unique<SamplerLookAndFeel>(); setLookAndFeel(theme.get());
     setWantsKeyboardFocus(true); addMouseListener(this, true);
     tooltips = std::make_unique<juce::TooltipWindow>(this, 650);
     holdMode = std::make_unique<ModeButton>("HOLD", "TRIGGER");
     voiceMode = std::make_unique<ModeButton>("MONO", "POLY");
     keyMode = std::make_unique<ModeButton>("KEY", "DETUNE");
     for (auto* c : std::initializer_list<juce::Component*> {
-        &overview, &waveform, holdMode.get(), voiceMode.get(), keyMode.get(),
+        &overview, &waveform, holdMode.get(), voiceMode.get(), keyMode.get(), &bankA, &bankB, &bankInfo, &cueSummary, &moduleInfo,
         &undoButton, &redoButton, &velocityButton, &quantizeButton, &settingsButton,
         &playButton, &ejectButton, &syncButton, &bpmDouble, &bpmHalf, &pitchTimeButton,
         &loadButton, &cancelButton, &reverseButton, &favoriteButton, &optionsButton, &speedDouble, &speedHalf,
@@ -192,6 +195,9 @@ MainComponent::MainComponent() {
         &level, &filter, &attack, &release, &speed, &cuePitch, &glide,
         &gridPanel, &gridBpm, &gridSave, &gridCancel, &gridTap, &gridDouble, &gridHalf, &metronome,
         &gridStart, &gridAdjustLeft, &gridAdjustRight, &gridSlipLeft, &gridSlipRight, &gridSet, &gridClear, &gridClearAll }) addAndMakeVisible(c);
+    constexpr const char* modules[] { "TRIM", "TUNE", "ENVELOPE", "STEMS", "GRID" };
+    for (int i = 0; i < 5; ++i) { auto& button = moduleButtons[static_cast<std::size_t>(i)]; button.setButtonText(modules[i]); button.getProperties().set("hardwareRole", "mode"); button.onClick = [this, i] { showSampleModule(static_cast<SampleModule>(i)); }; addAndMakeVisible(button); }
+    bankA.onClick = [this] { setPadBank(0); }; bankB.onClick = [this] { setPadBank(1); };
     for (int i = 0; i < 32; ++i) {
         auto& pad = pads[static_cast<std::size_t>(i)]; pad = std::make_unique<CuePad>(); pad->index = i;
         pad->onPress = [this](int p, const juce::ModifierKeys& mods) { selectPad(p, mods, true); grabKeyboardFocus(); };
@@ -209,15 +215,17 @@ MainComponent::MainComponent() {
     for (auto* b : { &undoButton, &redoButton, &velocityButton, &quantizeButton, &autoSetButton, &autoModeButton, &selectAllButton, &deleteButton, &keyboardButton, &loadButton, &gridStart, &gridAdjustLeft, &gridAdjustRight, &gridSlipLeft, &gridSlipRight, &gridSet, &gridClear, &gridClearAll, &gridSave, &gridCancel, &metronome }) outline(*b);
     for (auto* b : { &velocityButton, &quantizeButton, &syncButton, &pitchTimeButton, &reverseButton, &favoriteButton, &optionsButton, &keyboardButton, &metronome }) b->setClickingTogglesState(true);
     undoButton.setTooltip("Undo (Command-Z) - 100 actions"); redoButton.setTooltip("Redo (Command-Shift-Z)");
+    velocityButton.setButtonText("VEL"); quantizeButton.setButtonText("QNT");
     velocityButton.setTooltip("Use MIDI note velocity"); quantizeButton.setTooltip("Snap new cue starts and ends to 1/8 beat");
     pitchTimeButton.setTooltip("Independent pitch and time processing"); syncButton.setTooltip("Match source playback BPM to the studio tempo");
-    playButton.setTooltip("Play / Pause source (Space)"); keyboardButton.setTooltip("Play the selected cue chromatically");
+    playButton.setTooltip("Audition / Pause the sample source"); keyboardButton.setTooltip("Play the selected cue chromatically");
     autoSetButton.setTooltip("Populate cues using the selected Autoset mode; favorites are retained");
     reverseButton.setTooltip("Reverse selected cues"); favoriteButton.setTooltip("Protect selected cues from Autoset");
     optionsButton.setTooltip("Cue number, MIDI note and output routing");
     loadButton.setColour(juce::TextButton::buttonColourId, black);
     loadButton.setColour(juce::TextButton::textColourOffId, yellow);
     for (auto pair : std::initializer_list<std::pair<juce::TextButton*, const char*>> { { &undoButton, "undo" }, { &redoButton, "redo" }, { &playButton, "play" }, { &reverseButton, "reverse" }, { &favoriteButton, "favorite" }, { &optionsButton, "options" }, { &keyboardButton, "keyboard" }, { &deleteButton, "delete" }, { &pitchTimeButton, "pitchtime" } }) pair.first->getProperties().set("icon", pair.second);
+    playButton.getProperties().set("icon", ""); playButton.setButtonText("AUDITION");
     pitchTimeButton.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xff2b2b2b));
     pitchTimeButton.setColour(juce::TextButton::textColourOnId, yellow);
     for (auto* button : { &reverseButton, &favoriteButton, &optionsButton }) {
@@ -326,8 +334,8 @@ MainComponent::MainComponent() {
     waveform.onGridDrag = [this](std::size_t from, std::size_t to, bool slip) { gridDrag(from, to, slip); };
     // SourceWaveform owns the hover Zoom / Freeze / Grid buttons.
     waveform.onGridEditChanged = [this](bool value) { toggleGridEdit(value); };
-    gridSave.onClick = [this] { if (gridDirty) { auto before = project; restoreGrid(before, gridBackup); pushUndo(before); } gridEditing = false; gridDirty = false; metronomeOn = false; metronome.setToggleState(false, juce::dontSendNotification); engine.setMetronome(false); waveform.setGridEditMode(false); refreshControls(); resized(); repaint(); };
-    gridCancel.onClick = [this] { restoreGrid(project, gridBackup); gridEditing = false; gridDirty = false; metronomeOn = false; metronome.setToggleState(false, juce::dontSendNotification); engine.setMetronome(false); waveform.setGridEditMode(false); publishProject(); };
+    gridSave.onClick = [this] { if (gridDirty) { auto before = project; restoreGrid(before, gridBackup); pushUndo(before); } gridEditing = false; gridDirty = false; activeModule = SampleModule::Trim; metronomeOn = false; metronome.setToggleState(false, juce::dontSendNotification); engine.setMetronome(false); waveform.setGridEditMode(false); refreshControls(); resized(); repaint(); };
+    gridCancel.onClick = [this] { restoreGrid(project, gridBackup); gridEditing = false; gridDirty = false; activeModule = SampleModule::Trim; metronomeOn = false; metronome.setToggleState(false, juce::dontSendNotification); engine.setMetronome(false); waveform.setGridEditMode(false); publishProject(); };
     gridBpm.onValueChange = [this] { if (!refreshing && gridEditing) applyGridBpm(gridBpm.getValue()); };
     gridTap.onClick = [this] { tapTempo(); };
     gridDouble.onClick = [this] { applyGridBpm(std::min(300., project.sourceBpm * 2)); };
@@ -347,7 +355,7 @@ MainComponent::MainComponent() {
     audioWarning = engine.initialise(); engine.setMasterGain(.8f);
     status = "Load audio to begin";
     // setSize calls resized; every child must exist first.
-    setSize(1280, 960); refreshControls(); startTimerHz(30);
+    setSize(1230, 700); refreshControls(); startTimerHz(30);
 }
 
 MainComponent::~MainComponent() {
@@ -358,98 +366,132 @@ MainComponent::~MainComponent() {
 }
 
 void MainComponent::paint(juce::Graphics& g) {
-    g.fillAll(top);
-    const float sx = getWidth() / 1600.f, sy = getHeight() / 1184.f;
-    auto rect = [sx, sy](float x, float y, float w, float h) { return juce::Rectangle<float>(x * sx, y * sy, w * sx, h * sy); };
-    g.setColour(top); g.fillRect(rect(0, 0, 1600, 76));
-    referenceLabel(g, "SOURCE / CHOP / STEMS", rect(485, 14, 630, 47), std::max(13.f, 21 * sy), black);
-    HardwareLookAndFeel::paintScrew(g, { 180 * sx, 37 * sy }, 4 * sy);
-    HardwareLookAndFeel::paintScrew(g, { 1320 * sx, 37 * sy }, 4 * sy);
+    using H = HardwareLookAndFeel;
+    g.fillAll(H::chassis());
+    H::paintModule(g, padCabinet.toFloat(), "PERFORMANCE PADS", false);
+    H::paintModule(g, sampleDeck.toFloat(), "SAMPLING DECK", false);
     const bool loaded = source && source->frames() > 0;
-    if (!loaded) {
-        if (!busy) {
-            referenceLabel(g, "SAMPLIFY", rect(470, 380, 660, 84), std::max(28.f, 62 * sy), white);
-            referenceLabel(g, "MP AUDIO", rect(550, 464, 500, 38), std::max(12.f, 19 * sy), yellow);
-            referenceLabel(g, "Or drag and drop an audio file on this screen", rect(430, 640, 740, 40), std::max(11.f, 18 * sy));
+    if (!sampleDeck.isEmpty()) {
+        const auto lcd = juce::Rectangle<int>(sampleDeck.getX() + 12, 35, sampleDeck.getWidth() - 24, 54);
+        H::paintLCD(g, lcd.toFloat());
+        if (loaded) {
+            H::paintBezel(g, overview.getBounds().toFloat().expanded(3), true);
+            H::paintBezel(g, waveform.getBounds().toFloat().expanded(3), true);
+        } else {
+            auto blank = juce::Rectangle<int>(sampleDeck.getX() + 15, 101, sampleDeck.getWidth() - 30, std::max(100, parameterDeck.getY() - 151));
+            H::paintLCD(g, blank.toFloat());
+            moduleLabel(g, busy ? "READING AUDIO" : "NO SAMPLE LOADED", blank.toFloat().reduced(20).withHeight(35).translated(0, 12), 18, H::lcdInk());
+            moduleLabel(g, "Drop an audio file onto the sampling deck", blank.toFloat().withTrimmedTop(50).withHeight(30), 11, H::lcdInk().withAlpha(.75f));
         }
-        else referenceLabel(g, status, rect(260, 322, 1080, 55), std::max(12.f, 20 * sy), white);
-        return;
+        H::paintBezel(g, parameterDeck.toFloat());
     }
-    g.setColour(strip); g.fillRect(rect(0, 76, 1600, 96));
-    HardwareLookAndFeel::paintLCD(g, rect(526, 88, 385, 78));
-    g.setColour(strip); g.fillRect(rect(0, 612, 1600, 166));
-    HardwareLookAndFeel::paintBezel(g, rect(4, 778, 1592, 382));
-    HardwareLookAndFeel::paintLCD(g, rect(8, 180, 1584, 424));
-    g.setColour(HardwareLookAndFeel::trim()); g.drawHorizontalLine(static_cast<int>(612 * sy), 0, static_cast<float>(getWidth()));
-    g.drawHorizontalLine(static_cast<int>(778 * sy), 0, static_cast<float>(getWidth()));
-    if (!gridEditing && !optionsOpen) {
-        referenceLabel(g, "Reverse", rect(720, 724, 145, 32), std::max(10.f, 18 * sy));
-        referenceLabel(g, project.keyboardMode ? "Glide" : "Favorite", rect(880, 724, 145, 32), std::max(10.f, 18 * sy));
-        referenceLabel(g, "Options", rect(1460, 724, 130, 32), std::max(10.f, 18 * sy));
-    }
-    if (gridEditing) {
-        referenceLabel(g, "ADJUST", rect(652, 734, 140, 25), std::max(9.f, 13 * sy));
-        referenceLabel(g, "SLIP", rect(816, 734, 140, 25), std::max(9.f, 13 * sy));
-        referenceLabel(g, "BPM", rect(12, 628, 198, 24), std::max(10.f, 15 * sy), grey, juce::Justification::centredLeft);
+    const auto localMask = std::uint32_t(0xffff) << (activeBank * 16);
+    moduleLabel(g, "A W S E  /  D F T G  /  Y H U J  /  K O L P", { static_cast<float>(padCabinet.getX() + 15), static_cast<float>(getHeight() - 27), static_cast<float>(padCabinet.getWidth() - 30), 16 }, 9, H::ink().withAlpha(.65f));
+    juce::ignoreUnused(localMask);
+    if (activeModule == SampleModule::Tune) {
+        const float column = static_cast<float>(parameterDeck.getWidth() - 38) * .5f;
+        moduleLabel(g, "GLOBAL KEY / DETUNE", { static_cast<float>(parameterDeck.getX() + 12), static_cast<float>(parameterDeck.getY() + 37), column, 16 }, 9);
+        moduleLabel(g, "PLAYBACK BPM", { static_cast<float>(parameterDeck.getX() + 26) + column, static_cast<float>(parameterDeck.getY() + 37), column, 16 }, 9);
+    } else if (activeModule == SampleModule::Grid) {
+        moduleLabel(g, "TEMPO", { static_cast<float>(gridBpm.getX()), static_cast<float>(gridBpm.getY() - 17), static_cast<float>(gridBpm.getWidth()), 15 }, 9);
+        moduleLabel(g, "ADJUST", { static_cast<float>(gridAdjustLeft.getX()), static_cast<float>(gridAdjustLeft.getY() - 16), static_cast<float>(gridAdjustRight.getRight() - gridAdjustLeft.getX()), 14 }, 9);
+        moduleLabel(g, "SLIP 1 ms", { static_cast<float>(gridSlipLeft.getX()), static_cast<float>(gridSlipLeft.getY() - 16), static_cast<float>(gridSlipRight.getRight() - gridSlipLeft.getX()), 14 }, 9);
     }
     if (busy) {
-        g.setColour(top.withAlpha(.92f)); g.fillRect(rect(0, 172, 1600, 440));
-        referenceLabel(g, status, rect(260, 322, 1080, 55), std::max(12.f, 20 * sy), white);
+        const auto area = juce::Rectangle<int>(sampleDeck.getX() + 12, 95, sampleDeck.getWidth() - 24, std::max(80, parameterDeck.getY() - 102));
+        g.setColour(H::panel().withAlpha(.95f)); g.fillRoundedRectangle(area.toFloat(), 4);
+        moduleLabel(g, status, area.toFloat().reduced(12).withHeight(45), 12, H::ink());
     }
 }
 
 void MainComponent::resized() {
-    const double sx = getWidth() / 1600., sy = getHeight() / 1184.;
-    auto b = [sx, sy](juce::Component& c, int x, int y, int w, int h) { c.setBounds(static_cast<int>(x * sx), static_cast<int>(y * sy), std::max(1, static_cast<int>(w * sx)), std::max(1, static_cast<int>(h * sy))); };
-    b(undoButton, 12, 15, 60, 46); b(redoButton, 84, 15, 60, 46);
-    b(velocityButton, 1384, 15, 49, 46); b(quantizeButton, 1447, 15, 49, 46); b(settingsButton, 1510, 15, 78, 46);
-    b(playButton, 12, 94, 84, 65); b(*holdMode, 110, 94, 82, 65); b(*voiceMode, 208, 94, 82, 65);
-    for (int i = 0; i < 4; ++i) b(*stemButtons[static_cast<std::size_t>(i)], 306 + i * 52, 94, 49, 65);
-    b(trackTitle, 535, 96, 356, 28); b(trackInfo, 535, 126, 344, 26); b(ejectButton, 858, 97, 45, 21);
-    b(*keyMode, 927, 94, 77, 65); b(globalPitch, 1008, 98, 120, 57); b(globalDetune, 1008, 98, 120, 57);
-    b(currentBpm, 1145, 98, 140, 57); b(syncButton, 1295, 108, 88, 43);
-    b(bpmDouble, 1392, 98, 53, 25); b(bpmHalf, 1392, 129, 53, 25); b(pitchTimeButton, 1460, 94, 128, 65);
-    b(overview, 12, 184, 1576, 65); b(waveform, 12, 260, 1576, 340);
-    auto k = [&](juce::Slider& s, juce::Label& label, int centre) { b(s, centre - 52, 630, 104, 100); b(label, centre - 84, 728, 168, 32); };
-    k(level, levelLabel, 102); k(filter, filterLabel, 282); k(attack, attackLabel, 462); k(release, releaseLabel, 642);
-    b(reverseButton, 740, 646, 105, 72); b(favoriteButton, 900, 646, 105, 72);
-    b(glide, 902, 630, 104, 100); b(glideLabel, 884, 728, 140, 28); b(glideMode, 885, 756, 138, 20);
-    b(speed, 1050, 648, 164, 67); b(speedDouble, 1221, 650, 47, 28); b(speedHalf, 1221, 684, 47, 28); b(speedLabel, 1040, 728, 235, 32);
-    b(cuePitch, 1295, 648, 164, 67); b(cuePitchLabel, 1290, 728, 174, 32); b(optionsButton, 1490, 646, 83, 72);
-    b(optionsInfo, 40, 660, 700, 62); b(outputRouting, 1050, 650, 404, 65); b(outputLabel, 1050, 728, 404, 32);
-    b(autoSetButton, 12, 795, 285, 58); b(autoModeButton, 297, 795, 56, 58);
-    const bool slicer = autoMode == ChopMode::Grid;
-    if (slicer) {
-        b(sliceLeft, 367, 795, 42, 58); b(sliceSize, 416, 795, 155, 58); b(sliceRight, 578, 795, 42, 58);
-        b(selectAllButton, 639, 795, 190, 58); b(deleteButton, 844, 795, 88, 58);
-    } else {
-        b(selectAllButton, 370, 795, 270, 58); b(deleteButton, 655, 795, 88, 58);
-    }
-    b(keyStep, 770, 795, 182, 58); b(keyboardButton, 1490, 795, 98, 58);
-    const int gap = 14, width = (1576 - gap * 7) / 8;
+    if (!pads[0] || !progressBar) return;
+    const int w = getWidth(), h = getHeight(), gap = 12;
+    const bool loaded = source && source->frames() > 0;
+    std::vector<juce::Component*> placed;
+    placed.reserve(static_cast<std::size_t>(getNumChildComponents()));
+    auto put = [&placed](juce::Component& c, int x, int y, int width, int height) { placed.push_back(&c); c.setBounds(x, y, std::max(1, width), std::max(1, height)); c.setVisible(true); };
+    const int available = std::max(260, std::min(static_cast<int>(w * .49) - 36, h - 192));
+    const int side = std::max(56, (available - gap * 3) / 4), gridSide = side * 4 + gap * 3;
+    padCabinet = { 8, 8, gridSide + 24, h - 16 }; padGrid = { 20, 82, gridSide, gridSide };
+    sampleDeck = { padCabinet.getRight() + 18, 8, w - padCabinet.getRight() - 26, h - 16 };
+    const int px = padCabinet.getX() + 12, dx = sampleDeck.getX() + 14, dw = sampleDeck.getWidth() - 28;
+    put(bankInfo, px + 190, 12, padCabinet.getWidth() - 214, 18); bankInfo.setJustificationType(juce::Justification::centredRight);
+    put(bankA, px, 40, 72, 28); put(bankB, px + 78, 40, 72, 28);
+    int x = padCabinet.getRight() - 12;
+    for (auto* button : { &redoButton, &undoButton, &deleteButton, &selectAllButton }) { const int bw = button == &selectAllButton ? 62 : 34; x -= bw; put(*button, x, 40, bw, 28); x -= 5; }
     for (int i = 0; i < 32; ++i) {
-        const int row = 3 - i / 8;
-        b(*pads[static_cast<std::size_t>(i)], 12 + (i % 8) * (width + gap), 870 + row * 73, width, 60);
+        auto& pad = *pads[static_cast<std::size_t>(i)]; if (i / 16 != activeBank) continue;
+        const int local = i % 16, row = 3 - local / 4;
+        put(pad, padGrid.getX() + (local % 4) * (side + gap), padGrid.getY() + row * (side + gap), side, side);
     }
-    b(statusLabel, 14, 1163, 1570, 18);
-    b(loadButton, 470, 546, 660, 78); b(cancelButton, 685, 444, 230, 52);
-    b(*progressBar, 430, 397, 740, 20);
-    b(gridPanel, 0, 612, 1600, 166);
-    // Grid panel is a background sibling, kept behind its actual controls.
-    gridPanel.toBack();
-    b(gridBpm, 12, 660, 198, 62); b(gridDouble, 218, 660, 45, 27); b(gridHalf, 218, 695, 45, 27);
-    b(gridTap, 275, 660, 70, 62); b(metronome, 357, 660, 94, 62); b(gridStart, 466, 660, 171, 62);
-    b(gridAdjustLeft, 652, 660, 67, 62); b(gridAdjustRight, 723, 660, 67, 62);
-    b(gridSlipLeft, 816, 660, 67, 62); b(gridSlipRight, 887, 660, 67, 62);
-    b(gridSet, 970, 660, 78, 62); b(gridClear, 1060, 660, 120, 62); b(gridClearAll, 1194, 660, 160, 62);
-    b(gridSave, 1370, 650, 96, 38); b(gridCancel, 1478, 650, 108, 38);
-    for (auto* slider : { &globalPitch, &globalDetune, &currentBpm, &speed, &cuePitch, &gridBpm })
-        slider->setTextBoxStyle(juce::Slider::TextBoxLeft, false, static_cast<int>(slider->getWidth() * .72), slider->getHeight());
-    const float labelSize = juce::jlimit(10.f, 18.f, static_cast<float>(18 * sy));
-    for (auto* label : { &levelLabel, &filterLabel, &attackLabel, &releaseLabel, &speedLabel, &cuePitchLabel, &outputLabel, &glideLabel }) label->setFont(face(labelSize));
-    trackTitle.setFont(face(juce::jlimit(11.f, 20.f, static_cast<float>(20 * sy))));
-    trackInfo.setFont(face(juce::jlimit(9.f, 14.f, static_cast<float>(14 * sy))));
-    globalPitch.setVisible(source && keyMode->getToggleState()); globalDetune.setVisible(source && !keyMode->getToggleState());
+    const int foot = padGrid.getBottom() + 12, inner = padCabinet.getWidth() - 24;
+    if (autoMode == ChopMode::Grid) {
+        const int autoWidth = std::max(112, inner - 222); put(autoSetButton, px, foot, autoWidth, 30); put(autoModeButton, px + autoWidth + 3, foot, 28, 30);
+        put(sliceLeft, px + autoWidth + 38, foot, 26, 30); put(sliceSize, px + autoWidth + 69, foot, 112, 30); put(sliceRight, px + autoWidth + 186, foot, 26, 30);
+    } else if (autoMode == ChopMode::KeyShift) {
+        put(autoSetButton, px, foot, inner - 184, 30); put(autoModeButton, px + inner - 181, foot, 29, 30); put(keyStep, px + inner - 145, foot, 145, 30);
+    } else { put(autoSetButton, px, foot, inner - 36, 30); put(autoModeButton, px + inner - 32, foot, 32, 30); }
+    const int modeY = foot + 42;
+    put(*holdMode, px, modeY, 76, 30); put(*voiceMode, px + 82, modeY, 70, 30); put(keyboardButton, px + 158, modeY, 72, 30);
+    put(velocityButton, padCabinet.getRight() - 100, modeY, 40, 30); put(quantizeButton, padCabinet.getRight() - 54, modeY, 40, 30);
+    put(trackTitle, dx + 5, 40, dw - 97, 23); put(trackInfo, dx + 5, 64, dw - 50, 20);
+    put(loadButton, sampleDeck.getRight() - 95, 13, 78, 22); loadButton.setButtonText(loaded ? "LOAD" : "LOAD AUDIO");
+    put(playButton, sampleDeck.getRight() - 205, 13, 102, 22);
+    put(ejectButton, sampleDeck.getRight() - 68, 41, 43, 20); ejectButton.setVisible(loaded && !busy);
+    const int overviewY = 102, overviewH = 34, waveY = 146;
+    const int waveH = std::clamp(h / 4, 138, 188), moduleY = waveY + waveH + 13;
+    if (loaded) { put(overview, dx + 2, overviewY, dw - 4, overviewH); put(waveform, dx + 2, waveY, dw - 4, waveH); }
+    else { put(loadButton, dx + (dw - 190) / 2, 193, 190, 34); }
+    const int mw = (dw - 4 * 5) / 5;
+    for (int i = 0; i < 5; ++i) put(moduleButtons[static_cast<std::size_t>(i)], dx + i * (mw + 5), moduleY, mw, 32);
+    parameterDeck = { dx - 1, moduleY + 44, dw + 2, h - moduleY - 77 };
+    const int bx = parameterDeck.getX() + 12, by = parameterDeck.getY(), bw = parameterDeck.getWidth() - 24, bodyH = parameterDeck.getHeight();
+    put(cueSummary, bx, by + 8, bw, 22); cueSummary.setJustificationType(juce::Justification::centredLeft);
+    const int lower = by + 38;
+    auto knob = [&](juce::Slider& s, juce::Label& label, int kx, int ky, int kw, int kh) { put(label, kx, ky, kw, 18); put(s, kx, ky + 18, kw, kh - 18); s.setTextBoxStyle(juce::Slider::TextBoxBelow, false, std::min(90, kw - 6), 20); label.setFont(face(11)); };
+    auto numeric = [&](juce::Slider& s, int nx, int ny, int nw, int nh = 32) { put(s, nx, ny, nw, nh); s.setTextBoxStyle(juce::Slider::TextBoxLeft, false, std::max(40, nw - 38), nh); };
+    if (activeModule == SampleModule::Trim) {
+        if (optionsOpen) {
+            put(optionsInfo, bx, lower + 6, bw, 36); put(outputLabel, bx, lower + 52, bw - 110, 20); put(outputRouting, bx, lower + 76, bw - 110, 33); put(optionsButton, bx + bw - 96, lower + 76, 96, 33);
+        } else {
+            const int kw = std::min(128, (bw - 135) / 2), kh = std::max(105, std::min(142, bodyH - 56));
+            knob(level, levelLabel, bx + 5, lower, kw, kh); knob(filter, filterLabel, bx + kw + 14, lower, kw, kh);
+            const int buttonX = bx + bw - 110; put(reverseButton, buttonX, lower + 10, 105, 32); put(favoriteButton, buttonX, lower + 52, 105, 32); put(optionsButton, buttonX, lower + 94, 105, 32);
+        }
+    } else if (activeModule == SampleModule::Tune) {
+        const int column = (bw - 14) / 2;
+        put(*keyMode, bx, lower + 21, 70, 32); numeric(globalPitch, bx + 78, lower + 21, column - 78); numeric(globalDetune, bx + 78, lower + 21, column - 78);
+        globalPitch.setVisible(keyMode->getToggleState()); globalDetune.setVisible(!keyMode->getToggleState());
+        numeric(currentBpm, bx + column + 14, lower + 21, column - 88); put(syncButton, bx + bw - 80, lower + 21, 80, 32);
+        put(pitchTimeButton, bx, lower + 64, 70, 30); put(bpmHalf, bx + column + 14, lower + 64, 58, 30); put(bpmDouble, bx + column + 78, lower + 64, 58, 30);
+        put(cuePitchLabel, bx, lower + 109, column, 17); numeric(cuePitch, bx, lower + 129, column);
+        put(speedLabel, bx + column + 14, lower + 109, column, 17); numeric(speed, bx + column + 14, lower + 129, column - 78); put(speedHalf, bx + bw - 72, lower + 129, 33, 32); put(speedDouble, bx + bw - 34, lower + 129, 34, 32);
+    } else if (activeModule == SampleModule::Envelope) {
+        const int kw = std::min(136, (bw - 20) / 3), kh = std::min(144, bodyH - 72);
+        knob(attack, attackLabel, bx, lower, kw, kh); knob(release, releaseLabel, bx + kw + 8, lower, kw, kh); knob(glide, glideLabel, bx + (kw + 8) * 2, lower, kw, kh);
+        put(glideMode, bx + (kw + 8) * 2, lower + kh + 5, kw, 26);
+    } else if (activeModule == SampleModule::Stems) {
+        const int stemW = (bw - 18) / 4, stemH = std::min(100, bodyH - 100);
+        for (int i = 0; i < 4; ++i) put(*stemButtons[static_cast<std::size_t>(i)], bx + i * (stemW + 6), lower + 8, stemW, stemH);
+        put(moduleInfo, bx, lower + stemH + 20, bw, std::max(30, bodyH - stemH - 70));
+    } else {
+        const int rowY = lower + 18, col = (bw - 18) / 4;
+        numeric(gridBpm, bx, rowY, col + 34); put(gridHalf, bx + col + 40, rowY, 37, 31); put(gridDouble, bx + col + 81, rowY, 37, 31);
+        put(gridTap, bx + bw - 142, rowY, 66, 31); put(metronome, bx + bw - 70, rowY, 70, 31);
+        const int row2 = rowY + 57;
+        put(gridStart, bx, row2, col + 27, 32); put(gridAdjustLeft, bx + col + 36, row2, 35, 32); put(gridAdjustRight, bx + col + 76, row2, 35, 32);
+        put(gridSlipLeft, bx + bw - 80, row2, 35, 32); put(gridSlipRight, bx + bw - 40, row2, 35, 32);
+        const int row3 = row2 + 43; put(gridSet, bx, row3, col, 31); put(gridClear, bx + col + 6, row3, col, 31); put(gridClearAll, bx + (col + 6) * 2, row3, col, 31);
+        put(gridSave, bx + bw - col, row3, col, 31); put(gridCancel, bx + bw - col, row3 + 37, col, 27);
+        gridSave.setEnabled(gridDirty && loaded && !busy);
+    }
+    put(statusLabel, dx, sampleDeck.getBottom() - 29, dw, 23);
+    if (busy) { put(*progressBar, dx + 18, 166, dw - 36, 14); put(cancelButton, dx + (dw - 112) / 2, 206, 112, 28); }
+    trackTitle.setFont(face(15, true)); trackInfo.setFont(HardwareLookAndFeel::monoFont(10)); bankInfo.setFont(face(10)); cueSummary.setFont(HardwareLookAndFeel::monoFont(12, true)); moduleInfo.setFont(face(11));
+    for (auto* label : { &speedLabel, &cuePitchLabel, &outputLabel, &glideLabel }) label->setFont(face(11));
+    if (!loaded) { trackTitle.setText("SAMPLE MEMORY", juce::dontSendNotification); trackInfo.setText("WAV / AIFF / FLAC / MP3", juce::dontSendNotification); }
+    for (auto* child : getChildren()) if (std::find(placed.begin(), placed.end(), child) == placed.end()) child->setVisible(false);
 }
 
 std::uint32_t MainComponent::occupiedMask() const {
@@ -466,65 +508,64 @@ juce::Colour MainComponent::selectionColour() const {
 juce::String MainComponent::noteName(int index) { return juce::MidiMessage::getMidiNoteName(24 + index, true, true, 4); }
 juce::String MainComponent::timeText(double seconds) { return juce::String(static_cast<int>(seconds) / 60).paddedLeft('0', 2) + ":" + juce::String(static_cast<int>(seconds) % 60).paddedLeft('0', 2); }
 
+void MainComponent::setPadBank(int bank) {
+    activeBank = std::clamp(bank, 0, 1); refreshControls();
+}
+void MainComponent::showSampleModule(SampleModule module) {
+    if (module != SampleModule::Grid && gridEditing) toggleGridEdit(false);
+    activeModule = module;
+    if (module == SampleModule::Grid && source && !gridEditing) { toggleGridEdit(true); return; }
+    refreshControls();
+}
 void MainComponent::refreshControls() {
     refreshing = true;
     const bool loaded = source && source->frames() > 0;
-    for (int i = 0; i < getNumChildComponents(); ++i) { auto* child = getChildComponent(i); child->setVisible(loaded); child->setEnabled(!busy); }
-    for (auto* c : { &undoButton, &redoButton, &velocityButton, &quantizeButton, &settingsButton }) c->setVisible(true);
-    settingsButton.setEnabled(!busy); undoButton.setEnabled(!busy && !undoStack.empty()); redoButton.setEnabled(!busy && !redoStack.empty());
-    loadButton.setVisible(!loaded && !busy); loadButton.setEnabled(!busy);
-    cancelButton.setVisible(busy); cancelButton.setEnabled(true); progressBar->setVisible(busy);
-    statusLabel.setVisible(loaded); statusLabel.setText(status, juce::dontSendNotification);
+    const auto mask = selection & occupiedMask(); const bool cueSelected = mask != 0;
+    for (auto* child : getChildren()) child->setEnabled(loaded && !busy);
+    for (auto* c : { &bankA, &bankB, &settingsButton, &loadButton }) c->setEnabled(!busy);
+    for (auto& button : moduleButtons) button.setEnabled(!busy);
+    undoButton.setEnabled(canUndoEdit()); redoButton.setEnabled(canRedoEdit());
+    cancelButton.setEnabled(true); progressBar->setEnabled(true);
+    bankA.setToggleState(activeBank == 0, juce::dontSendNotification); bankB.setToggleState(activeBank == 1, juce::dontSendNotification);
+    const auto bankMask = std::uint32_t(0xffff) << (activeBank * 16);
+    const int hidden = bitCount(selection & ~bankMask);
+    bankInfo.setText((activeBank == 0 ? "01 - 16" : "17 - 32") + juce::String(hidden ? "  / " + juce::String(hidden) + " selected off bank" : ""), juce::dontSendNotification);
+    for (int i = 0; i < 5; ++i) moduleButtons[static_cast<std::size_t>(i)].setToggleState(static_cast<int>(activeModule) == i, juce::dontSendNotification);
+    statusLabel.setText(status, juce::dontSendNotification);
     velocityButton.setToggleState(project.velocityEnabled, juce::dontSendNotification); quantizeButton.setToggleState(project.quantize, juce::dontSendNotification);
-    holdMode->setToggleState(project.playbackMode == CuePlaybackMode::Hold, juce::dontSendNotification);
-    voiceMode->setToggleState(project.mono, juce::dontSendNotification);
-    keyboardButton.setToggleState(project.keyboardMode, juce::dontSendNotification);
+    holdMode->setToggleState(project.playbackMode == CuePlaybackMode::Hold, juce::dontSendNotification); voiceMode->setToggleState(project.mono, juce::dontSendNotification);
+    keyboardButton.setToggleState(project.keyboardMode, juce::dontSendNotification); keyboardButton.setEnabled(loaded && !busy && (cueSelected || project.keyboardMode));
     syncButton.setToggleState(project.syncTempo, juce::dontSendNotification); syncButton.setEnabled(loaded && project.pitchTimeEnabled && !busy);
     pitchTimeButton.setToggleState(project.pitchTimeEnabled, juce::dontSendNotification);
-    globalPitch.setValue(project.globalPitchSemitones, juce::dontSendNotification); globalDetune.setValue(project.globalDetuneCents, juce::dontSendNotification);
-    currentBpm.setValue(project.projectBpm, juce::dontSendNotification); currentBpm.setEnabled(loaded && !busy);
-    bpmDouble.setEnabled(currentBpm.isEnabled()); bpmHalf.setEnabled(currentBpm.isEnabled());
+    globalPitch.setValue(project.globalPitchSemitones, juce::dontSendNotification); globalDetune.setValue(project.globalDetuneCents, juce::dontSendNotification); currentBpm.setValue(project.projectBpm, juce::dontSendNotification);
     trackTitle.setText(sourceName, juce::dontSendNotification);
-    trackInfo.setText(juce::String(project.sourceKey) + "     " + juce::String(project.sourceBpm, 2) + " BPM     " + timeText(playback.sourceFrame / (source ? source->sampleRate : 44100)), juce::dontSendNotification);
+    trackInfo.setText(juce::String(project.sourceKey) + "  /  " + juce::String(project.sourceBpm, 2) + " BPM  /  " + timeText(playback.sourceFrame / (source ? source->sampleRate : 44100)), juce::dontSendNotification);
     for (int i = 0; i < 32; ++i) {
         auto& button = *pads[static_cast<std::size_t>(i)]; button.pad = project.pads[static_cast<std::size_t>(i)];
         button.selected = (selection & (std::uint32_t(1) << i)) != 0; button.active = (playback.activeCueMask & (std::uint32_t(1) << i)) != 0; button.repaint();
     }
-    const auto mask = selection & occupiedMask(); const bool cueSelected = mask != 0;
-    keyboardButton.setEnabled(loaded && !busy && (cueSelected || project.keyboardMode));
     auto common = [&](auto getter, double fallback) { bool first = true; double value = fallback; for (int i = 0; i < 32; ++i) if (mask & (std::uint32_t(1) << i)) { const double next = getter(project.pads[static_cast<std::size_t>(i)]); if (first) { value = next; first = false; } else if (std::abs(value - next) > .0001) return fallback; } return value; };
-    level.setValue(common([](const Pad& p) { return p.levelDb; }, 0), juce::dontSendNotification);
-    filter.setValue(common([](const Pad& p) { return p.filter; }, .5), juce::dontSendNotification);
-    attack.setValue(common([](const Pad& p) { return p.attackMs; }, 0), juce::dontSendNotification);
-    release.setValue(common([](const Pad& p) { return p.releaseMs; }, 10000), juce::dontSendNotification);
-    speed.setValue(common([](const Pad& p) { return p.speedRatio; }, 1), juce::dontSendNotification);
-    cuePitch.setValue(common([](const Pad& p) { return p.pitchSemitones; }, 0), juce::dontSendNotification);
-    reverseButton.setToggleState(common([](const Pad& p) { return p.reverse ? 1 : 0; }, 0) == 1, juce::dontSendNotification);
-    favoriteButton.setToggleState(common([](const Pad& p) { return p.favorite ? 1 : 0; }, 0) == 1, juce::dontSendNotification);
+    level.setValue(common([](const Pad& p) { return p.levelDb; }, 0), juce::dontSendNotification); filter.setValue(common([](const Pad& p) { return p.filter; }, .5), juce::dontSendNotification);
+    attack.setValue(common([](const Pad& p) { return p.attackMs; }, 0), juce::dontSendNotification); release.setValue(common([](const Pad& p) { return p.releaseMs; }, 10000), juce::dontSendNotification);
+    speed.setValue(common([](const Pad& p) { return p.speedRatio; }, 1), juce::dontSendNotification); cuePitch.setValue(common([](const Pad& p) { return p.pitchSemitones; }, 0), juce::dontSendNotification);
+    reverseButton.setToggleState(common([](const Pad& p) { return p.reverse ? 1 : 0; }, 0) == 1, juce::dontSendNotification); favoriteButton.setToggleState(common([](const Pad& p) { return p.favorite ? 1 : 0; }, 0) == 1, juce::dontSendNotification);
     const auto colour = selectionColour();
     for (auto* slider : { &level, &filter, &attack, &release, &speed, &cuePitch, &glide }) slider->setColour(juce::Slider::rotarySliderFillColourId, colour);
-    for (auto* button : { &reverseButton, &favoriteButton, &optionsButton, &speedDouble, &speedHalf }) button->setColour(juce::TextButton::textColourOffId, colour);
-    const bool showParams = loaded && !gridEditing && !optionsOpen;
-    for (auto* c : std::initializer_list<juce::Component*> { &level, &filter, &attack, &release, &levelLabel, &filterLabel, &attackLabel, &releaseLabel, &reverseButton, &speed, &cuePitch, &speedLabel, &cuePitchLabel, &speedDouble, &speedHalf }) { c->setVisible(showParams); c->setEnabled(cueSelected && !busy); }
-    favoriteButton.setVisible(showParams && !project.keyboardMode); favoriteButton.setEnabled(cueSelected && !busy);
-    glide.setVisible(showParams && project.keyboardMode); glide.setEnabled(project.mono && cueSelected && !busy); glideLabel.setVisible(false);
-    glideMode.setVisible(showParams && project.keyboardMode); glideMode.setEnabled(project.mono && cueSelected && !busy);
-    glide.setValue(project.glideMs, juce::dontSendNotification); glideMode.setSelectedId(project.glideMode == GlideMode::Sustain ? 2 : 1, juce::dontSendNotification);
-    optionsButton.setVisible(loaded && !gridEditing); optionsButton.setToggleState(optionsOpen, juce::dontSendNotification);
-    for (auto* c : std::initializer_list<juce::Component*> { &optionsInfo, &outputRouting, &outputLabel }) { c->setVisible(loaded && !gridEditing && optionsOpen); c->setEnabled(cueSelected && !busy); }
-    optionsInfo.setText(bitCount(mask) > 1 ? "Multiple Cues selected" : "Pad " + juce::String(selectedPad + 1) + "  /  " + noteName(selectedPad), juce::dontSendNotification);
-    optionsInfo.setFont(face(21)); optionsInfo.setColour(juce::Label::textColourId, grey);
+    for (auto* c : std::initializer_list<juce::Component*> { &level, &filter, &attack, &release, &reverseButton, &favoriteButton, &speed, &cuePitch, &speedDouble, &speedHalf, &optionsButton, &optionsInfo, &outputRouting }) c->setEnabled(cueSelected && !busy);
+    glide.setValue(project.glideMs, juce::dontSendNotification); glide.setEnabled(loaded && project.keyboardMode && project.mono && cueSelected && !busy);
+    glideMode.setSelectedId(project.glideMode == GlideMode::Sustain ? 2 : 1, juce::dontSendNotification); glideMode.setEnabled(glide.isEnabled()); optionsButton.setToggleState(optionsOpen, juce::dontSendNotification);
+    const auto cueId = juce::String(selectedPad / 16 == 0 ? "A" : "B") + juce::String(selectedPad % 16 + 1).paddedLeft('0', 2);
+    cueSummary.setText(!loaded ? "SELECT AN AUDIO FILE TO START" : bitCount(mask) > 1 ? juce::String(bitCount(mask)) + " CUES SELECTED / ALL BANKS" : "PAD " + cueId + "   /   " + noteName(selectedPad) + (project.pads[static_cast<std::size_t>(selectedPad)].empty() ? "   EMPTY" : "   " + juce::String(project.pads[static_cast<std::size_t>(selectedPad)].name)), juce::dontSendNotification);
+    optionsInfo.setText(bitCount(mask) > 1 ? "Multiple cues selected across both banks" : "Cue " + juce::String(selectedPad + 1) + " / MIDI " + juce::String(24 + selectedPad) + " / " + noteName(selectedPad), juce::dontSendNotification);
+    optionsInfo.setFont(face(14)); optionsInfo.setColour(juce::Label::textColourId, grey);
     outputRouting.setSelectedId(onReadStudioTrack ? onReadStudioTrack() + 1 : static_cast<int>(common([](const Pad& p) { return p.outputChannel; }, 0)) + 1, juce::dontSendNotification);
     for (int i = 0; i < 4; ++i) {
-        bool muted = project.stemMute[static_cast<std::size_t>(i)];
-        if (mask) muted = muted || common([i](const Pad& p) { return p.stemMute[static_cast<std::size_t>(i)] ? 1 : 0; }, 0) == 1;
+        bool muted = project.stemMute[static_cast<std::size_t>(i)]; if (mask) muted = muted || common([i](const Pad& p) { return p.stemMute[static_cast<std::size_t>(i)] ? 1 : 0; }, 0) == 1;
         stemButtons[static_cast<std::size_t>(i)]->setToggleState(muted, juce::dontSendNotification);
     }
-    const bool showGrid = loaded && gridEditing;
-    for (auto* c : std::initializer_list<juce::Component*> { &gridPanel, &gridBpm, &gridSave, &gridCancel, &gridTap, &gridDouble, &gridHalf, &metronome, &gridStart, &gridAdjustLeft, &gridAdjustRight, &gridSlipLeft, &gridSlipRight, &gridSet, &gridClear, &gridClearAll }) c->setVisible(showGrid);
-    gridSave.setVisible(showGrid && gridDirty); gridBpm.setValue(project.sourceBpm, juce::dontSendNotification);
-    sliceLeft.setVisible(loaded && autoMode == ChopMode::Grid); sliceRight.setVisible(sliceLeft.isVisible()); sliceSize.setVisible(sliceLeft.isVisible());
-    keyStep.setVisible(loaded && autoMode == ChopMode::KeyShift);
+    moduleInfo.setText(stemsReady ? "FOUR STEMS READY\nClick a stem to mute. Shift-click to solo." : "NATIVE STEM SEPARATION\nClick a stem to separate this source, then mute or solo it.", juce::dontSendNotification); moduleInfo.setJustificationType(juce::Justification::centred);
+    gridBpm.setValue(project.sourceBpm, juce::dontSendNotification);
+    for (auto* c : std::initializer_list<juce::Component*> { &gridBpm, &gridSave, &gridCancel, &gridTap, &gridDouble, &gridHalf, &metronome, &gridStart, &gridAdjustLeft, &gridAdjustRight, &gridSlipLeft, &gridSlipRight, &gridSet, &gridClear, &gridClearAll }) c->setEnabled(loaded && gridEditing && !busy);
     refreshing = false; resized(); repaint();
 }
 
@@ -548,6 +589,7 @@ void MainComponent::redo() { if (busy || redoStack.empty() || gridEditing) retur
 
 void MainComponent::selectPad(int index, const juce::ModifierKeys& mods, bool trigger) {
     if (busy || !source || index < 0 || index >= 32) return;
+    activeBank = index / 16;
     const auto bit = std::uint32_t(1) << index;
     if (mods.isShiftDown()) { selection = bit; selectedPad = index; deleteSelection(); return; }
     if (mods.isCommandDown() || mods.isCtrlDown()) { selection ^= bit; selectedPad = index; syncSelectionToEngine(); refreshControls(); refreshWaveforms(); if (stemsReady) updateStemWaveform(); return; }
@@ -569,22 +611,37 @@ void MainComponent::triggerCue(int index, float semitoneOffset, float velocity) 
 void MainComponent::releaseCue(int index, float offset) { engine.releasePad(index, offset); }
 void MainComponent::deleteSelection() { if (busy || !source) return; engine.stop(); editProject([this](Project& p) { for (int i = 0; i < 32; ++i) if (selection & (std::uint32_t(1) << i)) p.pads[static_cast<std::size_t>(i)] = Pad {}; }); }
 void MainComponent::selectAll() { selection = occupiedMask(); syncSelectionToEngine(); refreshControls(); refreshWaveforms(); if (stemsReady) updateStemWaveform(); }
-void MainComponent::movePad(int from, int to, bool copy) { if (busy || from == to || !source) return; engine.stop(); editProject([=](Project& p) { moveCue(p, from, to, copy); }); selectedPad = to; selection = std::uint32_t(1) << to; syncSelectionToEngine(); refreshControls(); refreshWaveforms(); if (stemsReady) updateStemWaveform(); }
+void MainComponent::movePad(int from, int to, bool copy) { if (busy || from == to || !source) return; engine.stop(); editProject([=](Project& p) { moveCue(p, from, to, copy); }); selectedPad = to; activeBank = to / 16; selection = std::uint32_t(1) << to; syncSelectionToEngine(); refreshControls(); refreshWaveforms(); if (stemsReady) updateStemWaveform(); }
 void MainComponent::renameCue(int index) {
     if (busy || !source) return;
-    juce::PopupMenu menu; menu.addItem(1, "Rename"); menu.addItem(2, "Delete");
+    juce::PopupMenu menu; menu.addItem(1, "Rename cue..."); menu.addItem(2, "Delete cue");
+    juce::PopupMenu move, copy;
+    for (int bank = 0; bank < 2; ++bank) {
+        juce::PopupMenu moveBank, copyBank;
+        for (int local = 0; local < 16; ++local) {
+            const int destination = bank * 16 + local;
+            const auto& cue = project.pads[static_cast<std::size_t>(destination)];
+            const auto label = juce::String(bank == 0 ? "A" : "B") + juce::String(local + 1).paddedLeft('0', 2) + (cue.empty() ? "  Empty" : "  " + juce::String(cue.name));
+            moveBank.addItem(100 + destination, label, destination != index);
+            copyBank.addItem(200 + destination, label, destination != index);
+        }
+        move.addSubMenu(bank == 0 ? "Bank A / 01 - 16" : "Bank B / 17 - 32", moveBank);
+        copy.addSubMenu(bank == 0 ? "Bank A / 01 - 16" : "Bank B / 17 - 32", copyBank);
+    }
+    menu.addSeparator(); menu.addSubMenu("Move / swap to", move, !project.pads[static_cast<std::size_t>(index)].empty()); menu.addSubMenu("Copy to", copy, !project.pads[static_cast<std::size_t>(index)].empty());
     auto safe = juce::Component::SafePointer<MainComponent>(this);
-    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(pads[static_cast<std::size_t>(index)].get()), [safe, index](int result) {
-        if (!safe) return;
-        if (result == 2) { safe->selection = std::uint32_t(1) << index; safe->deleteSelection(); return; }
-        if (result != 1) return;
-        auto* dialog = new juce::AlertWindow("Rename Cue", "Cue name", juce::MessageBoxIconType::NoIcon);
-        dialog->addTextEditor("name", safe->project.pads[static_cast<std::size_t>(index)].name);
-        dialog->addButton("Save", 1, juce::KeyPress(juce::KeyPress::returnKey)); dialog->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
-        dialog->enterModalState(true, juce::ModalCallbackFunction::create([safe, dialog, index](int accepted) {
-            if (safe && accepted == 1) safe->renameCueTo(index, dialog->getTextEditorContents("name"));
-        }), true);
-    });
+    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(pads[static_cast<std::size_t>(index)].get()), [safe, index](int result) { if (safe) safe->cueMenuAction(index, result); });
+}
+void MainComponent::cueMenuAction(int index, int result) {
+    if (result >= 100 && result < 132) { movePad(index, result - 100, false); return; }
+    if (result >= 200 && result < 232) { movePad(index, result - 200, true); return; }
+    if (result == 2) { selection = std::uint32_t(1) << index; deleteSelection(); return; }
+    if (result != 1) return;
+    auto* dialog = new juce::AlertWindow("Rename Cue", "Cue name", juce::MessageBoxIconType::NoIcon);
+    dialog->addTextEditor("name", project.pads[static_cast<std::size_t>(index)].name);
+    dialog->addButton("Save", 1, juce::KeyPress(juce::KeyPress::returnKey)); dialog->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+    auto safe = juce::Component::SafePointer<MainComponent>(this);
+    dialog->enterModalState(true, juce::ModalCallbackFunction::create([safe, dialog, index](int accepted) { if (safe && accepted == 1) safe->renameCueTo(index, dialog->getTextEditorContents("name")); }), true);
 }
 void MainComponent::renameCueTo(int index, const juce::String& value) {
     const auto name = value.substring(0, 128).toStdString();
@@ -748,7 +805,7 @@ void MainComponent::installSource(std::shared_ptr<const AudioData> input, Analys
     if (artist.isNotEmpty()) sourceName = artist + " - " + sourceName;
     stemFiles = std::move(paths); stems = std::move(imported);
     stemsReady = std::all_of(stems.begin(), stems.end(), [](const auto& s) { return s != nullptr; });
-    selection = 1; selectedPad = 0; undoStack.clear(); redoStack.clear(); heldKeys.clear();
+    selection = 1; selectedPad = 0; activeBank = 0; activeModule = SampleModule::Trim; undoStack.clear(); redoStack.clear(); heldKeys.clear();
     playback = {}; gridEditing = false; gridDirty = false; optionsOpen = false;
     metronomeOn = false; metronome.setToggleState(false, juce::dontSendNotification); engine.setMetronome(false);
     waveform.setGridEditMode(false); waveform.setFrozen(false);
@@ -762,7 +819,7 @@ void MainComponent::ejectSource() {
     engine.stop(); engine.setMetronome(false); engine.setSource(nullptr);
     source.reset(); waveformAudio.reset(); sourceFile = juce::File(); sourceName.clear(); stems = {}; stemFiles = {}; importedCues.clear(); stemsReady = false;
     waveformCancelled.store(true); displayedStemMask.reset();
-    project = {}; analysis = {}; undoStack.clear(); redoStack.clear(); heldKeys.clear(); selection = 1; selectedPad = 0;
+    project = {}; analysis = {}; undoStack.clear(); redoStack.clear(); heldKeys.clear(); selection = 1; selectedPad = 0; activeBank = 0; activeModule = SampleModule::Trim;
     overview.setData(nullptr, {}); waveform.setData(nullptr, {}); busy = false; status = "Load audio to begin"; refreshControls();
 }
 
@@ -936,7 +993,7 @@ void MainComponent::toggleGridEdit(bool value) {
     if (value && !gridEditing) { gridBackup = project; gridDirty = false; tapTimes.clear(); }
     if (!value && gridEditing && gridDirty) restoreGrid(project, gridBackup);
     if (!value) { metronomeOn = false; metronome.setToggleState(false, juce::dontSendNotification); engine.setMetronome(false); }
-    gridEditing = value; waveform.setGridEditMode(value); publishProject();
+    gridEditing = value; if (value) activeModule = SampleModule::Grid; else if (activeModule == SampleModule::Grid) activeModule = SampleModule::Trim; waveform.setGridEditMode(value); publishProject();
 }
 void MainComponent::gridEdit(const std::function<void(Project&)>& edit) {
     if (!gridEditing || busy || !source) return;
@@ -1086,7 +1143,7 @@ void MainComponent::timerCallback() {
             notes.push_back(event);
         }
         if (!notes.empty()) {
-            pushUndo(before); selectedPad = notes.back().pad; selection = std::uint32_t(1) << selectedPad;
+            pushUndo(before); selectedPad = notes.back().pad; activeBank = selectedPad / 16; selection = std::uint32_t(1) << selectedPad;
             publishProject();
             for (const auto& note : notes) if (note.held || project.playbackMode == CuePlaybackMode::Trigger) engine.triggerPad(note.pad, note.semitoneOffset, note.velocity);
         }
@@ -1095,19 +1152,15 @@ void MainComponent::timerCallback() {
     if (!busy && playback.triggerSerial != lastObservedTrigger) {
         lastObservedTrigger = playback.triggerSerial;
         if (playback.lastTriggeredPad >= 0 && playback.lastTriggeredPad < 32) {
-            selectedPad = playback.lastTriggeredPad; selection = std::uint32_t(1) << selectedPad;
+            selectedPad = playback.lastTriggeredPad; activeBank = selectedPad / 16; selection = std::uint32_t(1) << selectedPad;
             syncSelectionToEngine(); refreshControls(); refreshWaveforms(); if (stemsReady) updateStemWaveform();
         }
     }
     overview.setPlayback(playback); waveform.setPlayback(playback);
     for (int i = 0; i < 32; ++i) { auto& p = *pads[static_cast<std::size_t>(i)]; const bool active = (playback.activeCueMask & (std::uint32_t(1) << i)) != 0; if (active != p.active) { p.active = active; p.repaint(); } }
-    playButton.setButtonText(playback.sourcePlaying ? "II" : ">");
+    playButton.setButtonText(playback.sourcePlaying ? "PAUSE SOURCE" : "AUDITION");
     if (source) trackInfo.setText(juce::String(project.sourceKey) + "     " + juce::String(project.sourceBpm, 2) + " BPM     " + timeText(playback.sourceFrame / source->sampleRate), juce::dontSendNotification);
     if (busy) { progressDisplay = taskProgress.load(); repaint(); }
-    if (source) {
-        const auto hover = trackTitle.getBounds().getUnion(trackInfo.getBounds()).getUnion(ejectButton.getBounds()).contains(getMouseXYRelative());
-        ejectButton.setVisible(hover && !busy);
-    }
     if (stemSmokeStage == 1 && !busy && !waveformWorking && stemsReady && displayedStemMask) {
         bool aligned = true, distinct = false;
         for (const auto& s : stems) aligned = aligned && s && s->frames() == source->frames() && s->sampleRate == source->sampleRate && s->channels.size() == source->channels.size();
@@ -1179,7 +1232,7 @@ bool MainComponent::keyPressed(const juce::KeyPress& key) {
     const auto ch = juce::CharacterFunctions::toLowerCase(key.getTextCharacter());
     const int position = juce::String(typingKeys).indexOfChar(ch); if (position < 0) return false;
     if (heldKeys.count(static_cast<int>(ch))) return true;
-    const int pad = project.keyboardMode ? selectedPad : position;
+    const int pad = project.keyboardMode ? selectedPad : activeBank * 16 + position;
     const float offset = project.keyboardMode ? static_cast<float>(position) : 0;
     heldKeys.emplace(static_cast<int>(ch), std::make_pair(pad, offset));
     if (!project.keyboardMode) { selectedPad = pad; selection = std::uint32_t(1) << pad; }
@@ -1204,6 +1257,8 @@ juce::var MainComponent::runWorkflowSmoke() {
     const auto originalKeyFormat = keyDisplayFormat;
     const auto originalUndo = undoStack, originalRedo = redoStack;
     const auto originalPlayback = playback;
+    const auto originalBank = activeBank; const auto originalModule = activeModule;
+    const juce::Point<int> originalSize(getWidth(), getHeight());
     auto result = juce::var(new juce::DynamicObject());
     auto require = [&](const char* name, bool passed) {
         result.getDynamicObject()->setProperty(name, passed);
@@ -1211,14 +1266,70 @@ juce::var MainComponent::runWorkflowSmoke() {
     };
     auto restore = [&] {
         engine.stop(); engine.pauseSource(); project = original;
-        selection = originalSelection; selectedPad = originalSelected; autoMode = originalMode;
+        selection = originalSelection; selectedPad = originalSelected; activeBank = originalBank; activeModule = originalModule; autoMode = originalMode;
         keyDisplayFormat = originalKeyFormat; keyCycleGesture = false;
         undoStack = originalUndo; redoStack = originalRedo; playback = originalPlayback;
         gridEditing = false; gridDirty = false; optionsOpen = false;
         waveform.setGridEditMode(false); waveform.setFrozen(false); waveform.centreOn(0);
-        engine.seekSource(originalPlayback.sourceFrame); publishProject();
+        engine.seekSource(originalPlayback.sourceFrame); setSize(originalSize.x, originalSize.y); publishProject();
     };
     try {
+        auto usable = [this](const juce::Component& control) {
+            return control.isVisible() && control.isEnabled() && !control.getBounds().isEmpty() && getLocalBounds().contains(control.getBounds());
+        };
+        auto clickPad = [this](int index, juce::ModifierKeys modifiers = {}) {
+            auto* target = pads[static_cast<std::size_t>(index)].get(); const auto now = juce::Time::getCurrentTime();
+            const juce::MouseEvent event(juce::Desktop::getInstance().getMainMouseSource(), { 12, 12 }, modifiers, 1, 0, 0, 0, 0, target, target, now, { 12, 12 }, now, 1, false);
+            target->mouseDown(event); target->mouseUp(event);
+        };
+        bankB.onClick(); selectedPad = 16; selection = std::uint32_t(1) << 16; deleteSelection();
+        playback.sourceFrame = static_cast<std::size_t>(source->sampleRate * .187); project.quantize = false; publishProject();
+        clickPad(16);
+        require("bankBWidgetAssignsCue17", activeBank == 1 && !project.pads[16].empty() && project.pads[16].start == playback.sourceFrame && usable(*pads[16]) && !pads[0]->isVisible());
+        bankA.onClick(); clickPad(0); bankB.onClick(); clickPad(16, juce::ModifierKeys(juce::ModifierKeys::commandModifier));
+        moduleButtons[0].onClick(); level.setValue(-4, juce::sendNotificationSync);
+        require("multiSelectEditsHiddenBankCue", (selection & 1) && (selection & (std::uint32_t(1) << 16)) && project.pads[0].levelDb == -4 && project.pads[16].levelDb == -4 && usable(level));
+        project.keyboardMode = false; publishProject(); bankB.onClick();
+        keyPressed(juce::KeyPress('a', {}, 'a'));
+        const bool typedBankB = heldKeys.count('a') && heldKeys.at('a').first == 16;
+        bankA.onClick(); const bool heldOriginal = heldKeys.count('a') && heldKeys.at('a').first == 16; keyStateChanged(false);
+        require("typingFollowsBankAndReleaseRetainsOriginalCue", typedBankB && heldOriginal && !heldKeys.count('a') && activeBank == 0);
+        const auto originalCue = project.pads[0]; cueMenuAction(0, 231);
+        require("contextCopyReachesOtherBank", activeBank == 1 && usable(*pads[31]) && project.pads[31].start == originalCue.start && project.pads[31].colour == originalCue.colour && project.pads[0].levelDb == originalCue.levelDb);
+        selectAllButton.onClick(); require("selectAllRetainsBothBanks", selection == occupiedMask() && (selection & 0xffff) && (selection >> 16));
+        selection = 1; selectedPad = 0; project.keyboardMode = true; project.mono = true; publishProject();
+        auto inspectLayout = [&] {
+            bool valid = true;
+            for (int bank = 0; bank < 2; ++bank) {
+                (bank == 0 ? bankA : bankB).onClick(); int visiblePads = 0;
+                for (int i = 0; i < 32; ++i) { if (pads[static_cast<std::size_t>(i)]->isVisible()) { ++visiblePads; valid = valid && i / 16 == bank && usable(*pads[static_cast<std::size_t>(i)]) && pads[static_cast<std::size_t>(i)]->getWidth() == pads[static_cast<std::size_t>(i)]->getHeight() && pads[static_cast<std::size_t>(i)]->getWidth() >= 90; } }
+                valid = valid && visiblePads == 16;
+            }
+            for (int m = 0; m < 5; ++m) {
+                moduleButtons[static_cast<std::size_t>(m)].onClick();
+                for (auto& button : moduleButtons) valid = valid && usable(button);
+                valid = valid && usable(playButton) && playButton.getY() < overview.getY();
+                if (m == 0) valid = valid && usable(level) && usable(filter) && !attack.isVisible();
+                if (m == 1) valid = valid && usable(currentBpm) && usable(globalPitch) && usable(speed) && usable(cuePitch) && !level.isVisible();
+                if (m == 2) valid = valid && usable(attack) && usable(release) && usable(glide) && usable(glideMode);
+                if (m == 3) for (auto& stem : stemButtons) valid = valid && usable(*stem);
+                if (m == 4) { valid = valid && usable(gridBpm) && usable(gridStart) && usable(gridClearAll) && usable(gridCancel) && parameterDeck.contains(gridCancel.getBounds()); gridCancel.onClick(); }
+            }
+            return valid;
+        };
+        require("squarePadsAndAllModulesReachableAtFullSize", inspectLayout());
+        setSize(980, 620); require("squarePadsAndAllModulesReachableAtMinimumSize", inspectLayout());
+        moduleButtons[static_cast<std::size_t>(SampleModule::Tune)].onClick();
+        currentBpm.showTextBox();
+        juce::Component::SafePointer<juce::TextEditor> tempoEditor;
+        for (auto* child : currentBpm.getChildren()) if (auto* label = dynamic_cast<juce::Label*>(child))
+            if (auto* editor = label->getCurrentTextEditor()) tempoEditor = editor;
+        if (tempoEditor) { tempoEditor->setText("118.50", false); tempoEditor->grabKeyboardFocus(); }
+        refreshControls();
+        const bool editorRetained = tempoEditor && tempoEditor->isShowing() && tempoEditor->hasKeyboardFocus(false) && tempoEditor->getText() == "118.50";
+        currentBpm.hideTextBox(false);
+        require("numericEditorRetainsFocusAcrossControlRefresh", editorRetained && std::abs(project.projectBpm - 118.5) < .0001);
+        restore();
         project.quantize = false; publishProject();
         selectedPad = 31; selection = std::uint32_t(1) << 31;
         deleteSelection();

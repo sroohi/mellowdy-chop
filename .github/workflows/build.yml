@@ -150,10 +150,10 @@ jobs:
           if summary_path:
               with open(summary_path, "a") as summary:
                   summary.write("### Native macOS sampler, workstation, and stem report\n\n```json\n" + report_json + "\n```\n")
-          for field in ("macOSRun", "demoAnalysedAndPadsRendered", "screenshotSaved", "blankScreenshotSaved", "stemSeparationCompleted", "workstationScreenshotsSaved"):
+          for field in ("macOSRun", "demoAnalysedAndPadsRendered", "screenshotSaved", "blankScreenshotSaved", "stemSeparationCompleted", "workstationScreenshotsSaved", "consoleScreenshotsSaved"):
               if report.get(field) is not True:
                   fail(f"Native app smoke test failed: {field} was not true. App error: {public_report['error']}")
-          for group, minimum in (("workflowChecks", 10), ("stemWorkflowChecks", 1), ("workstationChecks", 10)):
+          for group, minimum in (("workflowChecks", 29), ("stemWorkflowChecks", 6), ("workstationChecks", 47), ("consoleChecks", 14)):
               checks = report.get(group)
               if not isinstance(checks, dict) or len(checks) < minimum:
                   fail(f"Native app smoke report requires at least {minimum} named boolean checks in {group}.")
@@ -161,8 +161,11 @@ jobs:
               if failed:
                   fail(f"Native app controller checks failed in {group}: {failed}")
               print(f"Passed {len(checks)} native controller checks in {group}: {', '.join(sorted(checks))}")
+          if report["workflowChecks"].get("numericEditorRetainsFocusAcrossControlRefresh") is not True:
+              fail("Native sampler focus regression check is missing or failed: numericEditorRetainsFocusAcrossControlRefresh")
           for filename in ("Samplify.png", "Samplify-empty.png", "Samplify-compact.png",
-                           "Samplify-arrange.png", "Samplify-patterns.png", "Samplify-fx.png", "Samplify-perform.png"):
+                           "Samplify-arrange.png", "Samplify-patterns.png", "Samplify-fx.png", "Samplify-perform.png",
+                           "Samplify-bank-b.png", "Samplify-envelope.png", "Samplify-stems.png", "Samplify-grid.png"):
               try:
                   image = (directory / filename).read_bytes()
               except OSError as error:
@@ -170,8 +173,8 @@ jobs:
               if len(image) < 24 or image[:8] != b"\x89PNG\r\n\x1a\n":
                   fail(f"Native app did not save a valid PNG screenshot: {filename}")
               width, height = struct.unpack(">II", image[16:24])
-              if width <= 0 or height <= 0:
-                  fail(f"Native app screenshot has invalid dimensions: {filename}")
+              if width < 1180 or height < 800:
+                  fail(f"Native app screenshot is below the 1180 x 800 minimum: {filename}: {width} x {height}")
               if filename == "Samplify.png" and (width, height) != (report.get("width"), report.get("height")):
                   fail(f"Native app screenshot dimensions disagree with report: {width} x {height}, expected {report.get('width')} x {report.get('height')}")
               print(f"Native macOS UI evidence: {filename}, {width} x {height}.")
@@ -189,6 +192,10 @@ jobs:
             ${{ runner.temp }}/samplify-smoke/Samplify-patterns.png
             ${{ runner.temp }}/samplify-smoke/Samplify-fx.png
             ${{ runner.temp }}/samplify-smoke/Samplify-perform.png
+            ${{ runner.temp }}/samplify-smoke/Samplify-bank-b.png
+            ${{ runner.temp }}/samplify-smoke/Samplify-envelope.png
+            ${{ runner.temp }}/samplify-smoke/Samplify-stems.png
+            ${{ runner.temp }}/samplify-smoke/Samplify-grid.png
             ${{ runner.temp }}/samplify-smoke/smoke.json
           if-no-files-found: warn
           retention-days: 30
@@ -237,26 +244,26 @@ jobs:
         run: |
           set -euo pipefail
           SHORT_SHA="${GITHUB_SHA:0:7}"
-          TAG="samplify-v0.3.0-$SHORT_SHA"
+          TAG="samplify-v0.4.0-$SHORT_SHA"
           cat > release-notes.md <<'NOTES'
-          Samplify 0.3.0 standalone development preview for macOS 12 and later, with universal Apple Silicon and Intel binaries. Beige panels and green displays frame the sampler, pattern editor, eight-track arranger, effects presets, and performance/output-recording controls. Installed stereo Audio Unit and VST3 effects can be hosted on track and master inserts.
+          Samplify 0.4.0 standalone development preview for macOS 12 and later, with universal Apple Silicon and Intel binaries. This UI structure update rebuilds the sampling console around pad banks and dedicated envelope, stem, and beatgrid modules. The pattern editor, eight-track arranger, effects presets, performance/output recording, and installed stereo Audio Unit/VST3 effect hosting remain available.
 
           Download the DMG and drag Samplify to Applications, or extract the app ZIP. The native four-stem HTDemucs model is bundled, and the app does not need Python, a separate model download, or an online account at runtime. Rubber Band supplies independent native pitch/time processing. SHA256SUMS.txt contains package and standalone-model checksums.
 
           This development build is ad-hoc signed. It is not Developer ID signed or notarized. macOS Gatekeeper may require explicit approval in Privacy & Security. Do not disable Gatekeeper globally.
 
-          The build passed all eleven required suites covering the sampler, cue editing, metadata, Rubber Band, actual neural-stem inference, workstation model/audio/session behavior, built-in effects, and plugin-host behavior. On macOS, plugin-host checks also load and restore a real Apple Audio Unit. The native app then exercised sampler, stem, and workstation controller workflows and captured seven UI screenshots plus a checked JSON report. Every reported boolean check passed, including at least ten workstation checks.
+          The build passed all eleven required suites covering the sampler, cue editing, metadata, Rubber Band, actual neural-stem inference, workstation model/audio/session behavior, built-in effects, and plugin-host behavior. On macOS, plugin-host checks also load and restore a real Apple Audio Unit. The native app then exercised sampler, stem, workstation, and console controller workflows and captured eleven UI screenshots plus a checked JSON report. Every reported boolean check passed, including at least 29 sampler, six stem, 47 workstation, and 14 console checks. The sampler's numeric-editor focus regression is explicitly required. Each screenshot is at least 1180 by 800 pixels, including the compact console, Bank B, envelope, stems, and grid views.
 
           The sampling workflow is informed by the Serato Sample 2.x manual and uses independent processing; this release does not claim exact Serato parity. No third-party plugins are bundled. Installed effects must match the running app architecture and satisfy macOS security and their own license requirements. Arbitrary third-party AU/VST3 compatibility, physical audio/MIDI hardware, musical quality, remaining interactive acceptance, and first-launch trust still need testing on a Mac.
 
           The separate ggml-model-htdemucs-4s-f16.bin asset supports source builds without PyTorch conversion, including on Intel Macs. Preserve its accompanying HTDemucs-model-provenance.json and HTDemucs-MIT.txt notices. Normal app users already have this model inside the app bundle.
           NOTES
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/Samplify-macOS-universal.zip dist/Samplify-macOS-universal.dmg dist/SHA256SUMS.txt dist/ggml-model-htdemucs-4s-f16.bin dist/HTDemucs-model-provenance.json dist/HTDemucs-MIT.txt dist/native-smoke/Samplify.png dist/native-smoke/Samplify-empty.png dist/native-smoke/Samplify-compact.png dist/native-smoke/Samplify-arrange.png dist/native-smoke/Samplify-patterns.png dist/native-smoke/Samplify-fx.png dist/native-smoke/Samplify-perform.png dist/native-smoke/smoke.json --clobber
+            gh release upload "$TAG" dist/Samplify-macOS-universal.zip dist/Samplify-macOS-universal.dmg dist/SHA256SUMS.txt dist/ggml-model-htdemucs-4s-f16.bin dist/HTDemucs-model-provenance.json dist/HTDemucs-MIT.txt dist/native-smoke/Samplify.png dist/native-smoke/Samplify-empty.png dist/native-smoke/Samplify-compact.png dist/native-smoke/Samplify-arrange.png dist/native-smoke/Samplify-patterns.png dist/native-smoke/Samplify-fx.png dist/native-smoke/Samplify-perform.png dist/native-smoke/Samplify-bank-b.png dist/native-smoke/Samplify-envelope.png dist/native-smoke/Samplify-stems.png dist/native-smoke/Samplify-grid.png dist/native-smoke/smoke.json --clobber
           else
             gh release create "$TAG" \
               --target "$GITHUB_SHA" \
-              --title "Samplify 0.3.0 development preview ($SHORT_SHA)" \
+              --title "Samplify 0.4.0 development preview ($SHORT_SHA)" \
               --notes-file release-notes.md \
               --prerelease \
               dist/Samplify-macOS-universal.zip \
@@ -272,5 +279,9 @@ jobs:
               dist/native-smoke/Samplify-patterns.png \
               dist/native-smoke/Samplify-fx.png \
               dist/native-smoke/Samplify-perform.png \
+              dist/native-smoke/Samplify-bank-b.png \
+              dist/native-smoke/Samplify-envelope.png \
+              dist/native-smoke/Samplify-stems.png \
+              dist/native-smoke/Samplify-grid.png \
               dist/native-smoke/smoke.json
           fi

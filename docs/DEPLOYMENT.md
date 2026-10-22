@@ -1,4 +1,4 @@
-# Build and distribute Samplify 0.3
+# Build and distribute Samplify 0.4
 
 Samplify is a standalone JUCE/C++ app for macOS 12 and later, built for Apple
 Silicon and Intel. Its sampling workflow follows the public Serato Sample 2.x
@@ -7,8 +7,9 @@ behaviors and remaining comparisons. Native HTDemucs supplies four-stem
 separation, and Rubber Band supplies independent pitch/time processing. These are
 independent engines, not Serato's proprietary processing.
 
-Version 0.3 adds beige panels and green displays, a pattern editor, an eight-track
-arranger, built-in effects presets, and performance/output-recording controls.
+Version 0.4 rebuilds the sampling console around pad banks and dedicated envelope,
+stem, and beatgrid modules. The pattern editor, eight-track arranger, built-in
+effects presets, and performance/output-recording controls remain available.
 Track and master inserts host installed stereo Audio Unit and VST3 effects.
 No third-party plugins are bundled; plugin vendors' licenses and activation
 requirements still apply.
@@ -22,10 +23,10 @@ Python and PyTorch are used only when preparing the model during a source build.
 A push to `codex/samplify-native`, or a manual GitHub Actions workflow run,
 publishes a prerelease after the universal macOS build, all required tests,
 native demo smoke test, and packaging succeed. Its tag is
-`samplify-v0.3.0-<first-seven-commit-characters>`. For commit `abc1234…`, the URL is:
+`samplify-v0.4.0-<first-seven-commit-characters>`. For commit `abc1234…`, the URL is:
 
 ```text
-https://github.com/sroohi/mellowdy-chop/releases/tag/samplify-v0.3.0-abc1234
+https://github.com/sroohi/mellowdy-chop/releases/tag/samplify-v0.4.0-abc1234
 ```
 
 Download the DMG and drag Samplify to Applications, or extract the app ZIP and
@@ -36,8 +37,11 @@ verify them; missing optional downloads will be reported as missing files.
 
 The release also includes `Samplify.png`, `Samplify-empty.png`,
 `Samplify-compact.png`, `Samplify-arrange.png`, `Samplify-patterns.png`,
-`Samplify-fx.png`, `Samplify-perform.png`, and `smoke.json` from the native macOS
-sampler, neural-separation, and workstation controller checks. The separate
+`Samplify-fx.png`, `Samplify-perform.png`, `Samplify-bank-b.png`,
+`Samplify-envelope.png`, `Samplify-stems.png`, `Samplify-grid.png`, and `smoke.json`
+from the native macOS sampler, neural-separation, workstation, and console
+controller checks. Every screenshot must be at least 1180 × 800 pixels, including
+the compact shell. The separate
 `ggml-model-htdemucs-4s-f16.bin` asset is for source
 builders; ordinary app users already have that file inside the bundle. Preserve
 the model's `HTDemucs-model-provenance.json` and full `HTDemucs-MIT.txt` notice when
@@ -80,7 +84,7 @@ PyTorch or converting again. `SAMPLIFY_MODEL_PYTHON` can select the Python 3.12
 interpreter used to create this isolated environment.
 
 PyTorch 2.6 macOS conversion wheels support Apple Silicon. For an Intel source
-build, download the converted model from a Samplify 0.3 release, or use the model
+build, download the converted model from a Samplify 0.4 release, or use the model
 inside a released app:
 
 ```sh
@@ -186,15 +190,18 @@ isolation or bypass a plugin's own installation/security requirements.
 Normal startup presents an empty load screen. The CI-only `--smoke-test` path
 captures that state, explicitly loads the demo, exercises the actual controller
 workflows, completes native HTDemucs separation through the UI, exercises the
-workstation, captures seven PNGs plus a JSON report, and exits. CI opens the real `.app`
+workstation and console, captures eleven PNGs plus a JSON report, and exits. CI opens the real `.app`
 through `open --args` and allows 270 seconds for startup, inference, and rendering
 (the app's internal workflow timeout is 240 seconds). It
 requires the macOS/demo/rendering, blank-screenshot, stem-completion, and
-workstation-screenshot flags to
-be true, at least ten named `workflowChecks` booleans to be true, and every named
-`stemWorkflowChecks` boolean to be true. `workstationChecks` must contain at least
-ten named booleans, all true. Missing or undersized check groups fail. CI also
-verifies all seven PNGs and matching full-image dimensions. A missing runner
+workstation- and console-screenshot flags to
+be true. Named boolean groups must contain at least 29 `workflowChecks`, six
+`stemWorkflowChecks`, 47 `workstationChecks`, and 14 `consoleChecks`, all true.
+The numeric-editor focus regression must be explicitly true under
+`numericEditorRetainsFocusAcrossControlRefresh`. `consoleScreenshotsSaved` must
+also be true. Missing or
+undersized check groups fail. CI also verifies all eleven PNGs, a minimum size of
+1180 × 800 for each, and matching full-image dimensions. A missing runner
 GUI or absent valid report fails the workflow. The separate native smoke artifact
 and release assets contain the evidence.
 

@@ -1,3 +1,18 @@
+# Hardware console presentation (0.4)
+
+The console presents the existing sampler and workstation through a new cabinet:
+a vertical five-mode rail, permanent transport/recording dock, two banks of sixteen
+square pads, a compact source deck and focused Trim/Tune/Envelope/Stems/Grid modules.
+Song has an eight-track timeline and clip inspector; Pattern has a vertical
+cartridge library and note editor; Effects uses horizontal processor cartridges
+and a separate hosted insert chain; Perform is an eight-channel mixing console.
+
+This version changes presentation and controller routing. The audio engine,
+workstation domain, effect implementations, plugin host and session schema retain
+their existing behavior. The sampler keeps all 32 cues across both banks; typing
+keys follow the visible bank while MIDI 24–55 retains absolute cue addressing.
+See [UI acceptance](UI_REDESIGN_ACCEPTANCE.md) for retained features and checks.
+
 # Samplify workstation
 
 The sampler remains the instrument: 32 cues address the currently loaded source

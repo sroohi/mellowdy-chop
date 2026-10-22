@@ -18,13 +18,14 @@ class ModeButton;
 class StemButton;
 class StemSeparator;
 
-// The source player, per-cue strip, Autoset toolbar and 8 x 4 performance grid
-// follow the supplied Sample manual. StudioComponent handles the outer workstation.
+// A banked 4 x 4 pad instrument with a separate sampling deck and physical
+// editing modules. StudioComponent owns the cabinet and global transport.
 class MainComponent final : public juce::Component,
                             public juce::FileDragAndDropTarget,
                             public juce::DragAndDropContainer,
                             private juce::Timer {
 public:
+    enum class SampleModule { Trim, Tune, Envelope, Stems, Grid };
     MainComponent();
     ~MainComponent() override;
     void paint(juce::Graphics&) override;
@@ -46,6 +47,13 @@ public:
     void setStudioTempo(double bpm);
     void configureStudioRouting(std::function<int()> read, std::function<void(int)> change);
     void refreshStudioRouting();
+    void setPadBank(int);
+    int padBank() const { return activeBank; }
+    void showSampleModule(SampleModule);
+    void undoEdit() { undo(); }
+    void redoEdit() { redo(); }
+    bool canUndoEdit() const { return !busy && !gridEditing && !undoStack.empty(); }
+    bool canRedoEdit() const { return !busy && !gridEditing && !redoStack.empty(); }
     AudioEngine& audioEngine() { return engine; }
     const Project& samplerProject() const { return project; }
     std::shared_ptr<const AudioData> samplerSource() const { return source; }
@@ -61,7 +69,7 @@ public:
     juce::var stemSmokeResult() const;
 
 private:
-    class ReferenceLookAndFeel;
+    class SamplerLookAndFeel;
     using Completion = std::function<void()>;
     using Work = std::function<Completion(const std::atomic<bool>&)>;
     void timerCallback() override;
@@ -89,6 +97,7 @@ private:
     void deleteSelection();
     void renameCue(int);
     void renameCueTo(int, const juce::String&);
+    void cueMenuAction(int, int);
     void movePad(int, int, bool copy);
     void selectAll();
     void chooseAutoSetMode();
@@ -116,7 +125,7 @@ private:
     std::atomic<bool> waveformCancelled { false };
     bool waveformWorking = false;
     std::optional<std::array<bool, 4>> displayedStemMask, runningStemMask;
-    std::unique_ptr<ReferenceLookAndFeel> theme;
+    std::unique_ptr<SamplerLookAndFeel> theme;
     std::shared_ptr<const AudioData> source;
     Analysis analysis, stemAnalysis;
     Project project;
@@ -133,6 +142,9 @@ private:
     std::array<std::unique_ptr<StemButton>, 4> stemButtons;
     std::uint32_t selection = 1;
     int selectedPad = 0;
+    int activeBank = 0;
+    SampleModule activeModule = SampleModule::Trim;
+    juce::Rectangle<int> padCabinet, padGrid, sampleDeck, parameterDeck;
     std::map<int, std::pair<int, float>> heldKeys;
     std::vector<Project> undoStack, redoStack;
     std::optional<Project> gestureBefore;
@@ -164,6 +176,9 @@ private:
     juce::var stemSmokeChecks;
 
     juce::TextButton undoButton { "Undo" }, redoButton { "Redo" };
+    juce::TextButton bankA { "BANK A" }, bankB { "BANK B" };
+    std::array<juce::TextButton, 5> moduleButtons;
+    juce::Label bankInfo, cueSummary, moduleInfo;
     juce::TextButton velocityButton { "V" }, quantizeButton { "Q" }, settingsButton { "Audio" };
     juce::TextButton playButton { ">" }, ejectButton { "Eject" }, syncButton { "SYNC" };
     juce::TextButton bpmDouble { "x 2" }, bpmHalf { "1/2" }, pitchTimeButton { "P / T" };

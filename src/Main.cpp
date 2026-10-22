@@ -6,7 +6,7 @@ class SamplifyApplication final : public juce::JUCEApplication, private juce::Me
                                  private juce::Timer {
 public:
     const juce::String getApplicationName() override { return "Samplify"; }
-    const juce::String getApplicationVersion() override { return "0.3.0"; }
+    const juce::String getApplicationVersion() override { return "0.4.0"; }
     bool moreThanOneInstanceAllowed() override { return false; }
 
     void initialise(const juce::String& arguments) override {
@@ -73,7 +73,7 @@ public:
             case 11: window->studio().workstation().bounceSelectedPattern(); break;
             case 12: window->studio().workstation().toggleMasterRecording(); break;
             case 9: juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,
-                "Samplify by MP Audio", "Native sampling workstation / version 0.3.0\n\n"
+                "Samplify by MP Audio", "Native sampling workstation / version 0.4.0\n\n"
                 "32-cue sampler, pattern recording, arrangement, FX and live performance.\n"
                 "Native HTDemucs Stems, Rubber Band pitch/time, built-in effects and AU/VST3 hosting.\n"
                 "This app does not contain Serato's proprietary engines.\n\n"
@@ -113,6 +113,7 @@ private:
                             throw std::runtime_error("Native stem UI workflow failed: " + item.name.toString().toStdString());
                 } else throw std::runtime_error("Native stem UI workflow returned no checks");
                 stemSeparationCompleted = true;
+                window->studio().showPage(2);
                 workstationChecks = window->studio().workstation().runWorkflowSmoke();
                 if (auto* checks = workstationChecks.getDynamicObject()) {
                     if (checks->getProperties().size() < 10) throw std::runtime_error("Workstation smoke returned too few checks");
@@ -120,6 +121,13 @@ private:
                         if (!item.value.isBool() || !static_cast<bool>(item.value))
                             throw std::runtime_error("Workstation UI workflow failed: " + item.name.toString().toStdString());
                 } else throw std::runtime_error("Workstation UI workflow returned no checks");
+                consoleChecks = window->studio().runConsoleWorkflowSmoke();
+                if (auto* checks = consoleChecks.getDynamicObject()) {
+                    if (checks->getProperties().size() < 8) throw std::runtime_error("Console smoke returned too few checks");
+                    for (const auto& item : checks->getProperties())
+                        if (!item.value.isBool() || !static_cast<bool>(item.value))
+                            throw std::runtime_error("Console UI workflow failed: " + item.name.toString().toStdString());
+                } else throw std::runtime_error("Console UI workflow returned no checks");
                 finishSmoke({});
             }
         } catch (const std::exception& e) { finishSmoke(e.what()); }
@@ -129,21 +137,32 @@ private:
         auto& main = window->content();
         auto& shell = window->studio();
         shell.showPage(0);
+        main.setPadBank(0); main.showSampleModule(MainComponent::SampleModule::Trim);
         bool success = error.isEmpty() && blankScreenshotSaved && stemSeparationCompleted;
         const bool normalSaved = saveSmokeImage("Samplify.png");
         const auto normalWidth = shell.getWidth(), normalHeight = shell.getHeight();
-        shell.setSize(1040, 830);
+        shell.setSize(1180, 800);
         const bool compactSaved = saveSmokeImage("Samplify-compact.png");
         shell.setSize(normalWidth, normalHeight);
         bool pagesSaved = true;
         constexpr const char* names[] { "Samplify-arrange.png", "Samplify-patterns.png", "Samplify-fx.png", "Samplify-perform.png" };
         for (int i = 0; i < 4; ++i) { shell.showPage(i + 1); pagesSaved = saveSmokeImage(names[i]) && pagesSaved; }
         shell.showPage(0);
+        main.setPadBank(1);
+        bool consoleSaved = saveSmokeImage("Samplify-bank-b.png");
+        main.setPadBank(0);
+        using Module = MainComponent::SampleModule;
+        main.showSampleModule(Module::Envelope); consoleSaved = saveSmokeImage("Samplify-envelope.png") && consoleSaved;
+        main.showSampleModule(Module::Stems); consoleSaved = saveSmokeImage("Samplify-stems.png") && consoleSaved;
+        main.showSampleModule(Module::Grid); consoleSaved = saveSmokeImage("Samplify-grid.png") && consoleSaved;
+        main.showSampleModule(Module::Trim);
         auto* report = new juce::DynamicObject();
         report->setProperty("demoAnalysedAndPadsRendered", main.isReadyForSmokeTest());
         report->setProperty("workflowChecks", workflowChecks);
         report->setProperty("stemWorkflowChecks", stemWorkflowChecks);
         report->setProperty("workstationChecks", workstationChecks);
+        report->setProperty("consoleChecks", consoleChecks);
+        report->setProperty("consoleScreenshotsSaved", consoleSaved);
         report->setProperty("workstationScreenshotsSaved", pagesSaved);
         report->setProperty("stemSeparationCompleted", stemSeparationCompleted);
         report->setProperty("blankScreenshotSaved", blankScreenshotSaved);
@@ -154,8 +173,8 @@ private:
        #else
         report->setProperty("macOSRun", false);
        #endif
-        report->setProperty("screenshotSaved", normalSaved && compactSaved && pagesSaved);
-        success = success && normalSaved && compactSaved && pagesSaved;
+        report->setProperty("screenshotSaved", normalSaved && compactSaved && pagesSaved && consoleSaved);
+        success = success && normalSaved && compactSaved && pagesSaved && consoleSaved;
         success = smokeDirectory.getChildFile("smoke.json").replaceWithText(juce::JSON::toString(juce::var(report))) && success;
         juce::Logger::writeToLog(success ? "Samplify UI smoke test passed" : "Samplify UI smoke test failed: " + error);
         setApplicationReturnValue(success ? 0 : 1); quit();
@@ -167,10 +186,10 @@ private:
             auto* main = new StudioComponent();
             setContentOwned(main, true);
             setResizable(true, false);
-            setResizeLimits(1040, 830, 2560, 1800);
+            setResizeLimits(1180, 800, 2560, 1800);
             const auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay();
             const auto area = display ? display->userArea : juce::Rectangle<int>(1440, 1100);
-            centreWithSize(juce::jlimit(1040, 1440, area.getWidth() - 60), juce::jlimit(830, 1060, area.getHeight() - 80));
+            centreWithSize(juce::jlimit(1180, 1440, area.getWidth() - 60), juce::jlimit(800, 1060, area.getHeight() - 80));
             setVisible(true);
         }
         StudioComponent& studio() { return *static_cast<StudioComponent*>(getContentComponent()); }
@@ -180,7 +199,7 @@ private:
     HardwareLookAndFeel lookAndFeel;
     std::unique_ptr<MainWindow> window;
     juce::File smokeDirectory;
-    juce::var workflowChecks, stemWorkflowChecks, workstationChecks;
+    juce::var workflowChecks, stemWorkflowChecks, workstationChecks, consoleChecks;
     int smokeAttempts = 0, smokeStage = 0;
     bool blankScreenshotSaved = false, stemSeparationCompleted = false;
 };

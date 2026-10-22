@@ -24,6 +24,9 @@ public:
     WorkstationState captureState();
     void setTempo(double);
     void setSelectedTrack(int track) { selectTrack(track); }
+    void setSelectedPattern(int patternIndex) { selectPattern(patternIndex); }
+    bool canUndo() const { return !busy && !undoStack.empty(); }
+    bool canRedo() const { return !busy && !redoStack.empty(); }
     void restoreState(const WorkstationState&);
     void showPage(Page);
     Page getPage() const { return page; }
@@ -131,12 +134,15 @@ private:
 
     juce::ComboBox fxBusChoice, fxTypeChoice, fxPresetChoice;
     std::array<juce::TextButton, 4> fxSlotButtons;
+    std::array<juce::TextButton, 4> hostedSlotButtons;
     std::array<juce::Slider, 6> fxParameters;
     std::array<juce::Label, 6> fxParameterLabels;
     juce::Slider fxMix;
     juce::Label fxName, fxDescription, fxMixLabel;
     juce::TextButton fxBypass { "BYPASS FX" }, pluginManager { "PLUG-IN MANAGER" }, pluginEditor { "OPEN EDITOR" }, pluginBypass { "BYPASS PLUG-IN" };
     juce::Label pluginStatus, bounceNotice;
+    juce::Rectangle<int> libraryPanel, editorPanel, inspectorPanel, utilityPanel;
+    juce::Rectangle<int> processorPanel, hostedPanel, performancePanel, masterPanel;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(WorkstationComponent)
 };
