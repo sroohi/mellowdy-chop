@@ -125,6 +125,13 @@ void slicing() {
     check(grid[0].end == 11025 && grid.back().end == audio.frames(), "grid boundaries match tempo and final frame");
     const auto transient = makeSlices(audio, analysis, ChopMode::Transients, 16);
     check(transient.size() == 4 && bounded(transient, audio.frames()), "transients sort, deduplicate, and reject out-of-range onsets");
+    // Irregular phase/spacing ensures random mode consumes the supplied grid,
+    // rather than generating arbitrary samples or substituting a BPM grid.
+    for (std::size_t frame = 211; frame < audio.frames(); frame += 977) analysis.beats.push_back(frame);
+    std::reverse(analysis.beats.begin(), analysis.beats.end());
+    analysis.beats.push_back(211);
+    analysis.beats.push_back(0);
+    analysis.beats.push_back(audio.frames() + 1);
     const auto randomA = makeSlices(audio, analysis, ChopMode::Random, 16, 1, 27);
     const auto randomB = makeSlices(audio, analysis, ChopMode::Random, 16, 1, 27);
     const auto randomC = makeSlices(audio, analysis, ChopMode::Random, 16, 1, 28);
@@ -136,6 +143,17 @@ void slicing() {
     check(same && different, "seeded random slicing is reproducible and changes with seed");
     check(randomA.size() == 16 && bounded(randomA, audio.frames())
         && randomA.front().start == 0 && randomA.back().end == audio.frames(), "random slices partition the full source within bounds");
+    check(std::all_of(randomA.begin(), randomA.end() - 1, [&](const Pad& pad) {
+        return std::find(analysis.beats.begin(), analysis.beats.end(), pad.end) != analysis.beats.end();
+    }), "every internal random cue lies on the supplied detected beat grid");
+    Analysis sparse;
+    sparse.beats = {441, 22050, 22050, audio.frames() + 100};
+    const auto sparseRandom = makeSlices(audio, sparse, ChopMode::Random, 16);
+    check(sparseRandom.size() == 3 && sparseRandom[0].end == 441 && sparseRandom[1].end == 22050
+        && bounded(sparseRandom, audio.frames()), "insufficient detected beat grid yields fewer unique musical slices");
+    const auto derivedRandom = makeSlices(audio, {}, ChopMode::Random, 16);
+    check(derivedRandom.size() == 8 && std::all_of(derivedRandom.begin(), derivedRandom.end() - 1,
+        [](const Pad& pad) { return pad.end % 11025 == 0; }), "missing detected beats fall back to a bounded BPM grid");
     check(makeSlices(audio, analysis, ChopMode::Grid, 16, 0).empty(), "invalid grid division is rejected");
     check(makeSlices(audio, analysis, ChopMode::Grid, 0).empty(), "zero pad request is rejected");
     check(makeSlices(audio, analysis, ChopMode::Random, 200).size() == 32, "pad count is limited to model capacity");

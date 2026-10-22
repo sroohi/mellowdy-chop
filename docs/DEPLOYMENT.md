@@ -21,6 +21,8 @@ it is not a notarized public release. Repository settings must permit Actions to
 create releases with the workflow's scoped `contents: write` token. If release
 publication is denied, the successful build's Actions artifact remains available.
 The workflow never publishes releases from pull requests or ordinary branch pushes.
+The release also includes `Samplify.png` and `smoke.json` from the native demo
+launch so its macOS UI and readiness report can be inspected.
 
 ## Download from GitHub Actions
 

@@ -364,15 +364,41 @@ std::vector<Pad> makeSlices(const AudioData& audio, const Analysis& analysis,
         boundaries.push_back(audio.frames());
         if (boundaries.size() > static_cast<std::size_t>(count + 1)) boundaries.resize(static_cast<std::size_t>(count + 1));
     } else {
-        // Shuffle stratified boundaries rather than generating duplicate tiny
-        // fragments. The seed fully determines the resulting partition.
-        const auto slices = std::min(static_cast<std::size_t>(count), audio.frames());
         std::mt19937 random(seed);
-        for (std::size_t i = 1; i < slices; ++i) {
-            const auto lower = i * audio.frames() / slices;
-            const auto upper = (i + 1) * audio.frames() / slices - 1;
-            const auto span = upper - lower + 1;
-            boundaries.push_back(lower + random() % span);
+        std::vector<std::size_t> beats;
+        for (const auto frame : analysis.beats) {
+            if (frame > 0 && frame < audio.frames()) beats.push_back(frame);
+        }
+        std::sort(beats.begin(), beats.end());
+        beats.erase(std::unique(beats.begin(), beats.end()), beats.end());
+        // Prefer the detected grid, including its phase and variable spacing.
+        // With no detected interior beats, derive a fixed BPM grid anchored at
+        // zero (120 BPM for invalid tempo). Derive positions lazily so an
+        // implausibly high tempo cannot allocate an enormous candidate vector.
+        const double bpm = std::isfinite(analysis.bpm) && analysis.bpm > 0 ? analysis.bpm : 120;
+        const double step = std::max(1.0, audio.sampleRate * 60 / bpm);
+        const auto candidates = beats.empty()
+            ? static_cast<std::size_t>((audio.frames() - 1) / step) : beats.size();
+        if (candidates > 0) {
+            const auto cuts = std::min(static_cast<std::size_t>(count - 1), candidates);
+            for (std::size_t i = 0; i < cuts; ++i) {
+                const auto lower = i * candidates / cuts;
+                const auto upper = (i + 1) * candidates / cuts;
+                const auto chosen = lower + random() % (upper - lower);
+                boundaries.push_back(beats.empty()
+                    ? static_cast<std::size_t>(std::llround((chosen + 1) * step)) : beats[chosen]);
+            }
+            // An insufficient grid yields fewer slices, keeping every internal
+            // cut musical instead of filling remaining pads with off-grid cuts.
+        } else {
+            // Sub-beat and one-frame clips have no interior grid positions.
+            // Retain a bounded stratified sample fallback for these tiny clips.
+            const auto slices = std::min(static_cast<std::size_t>(count), audio.frames());
+            for (std::size_t i = 1; i < slices; ++i) {
+                const auto lower = i * audio.frames() / slices;
+                const auto upper = (i + 1) * audio.frames() / slices - 1;
+                boundaries.push_back(lower + random() % (upper - lower + 1));
+            }
         }
         boundaries.push_back(audio.frames());
     }

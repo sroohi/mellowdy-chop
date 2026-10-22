@@ -25,7 +25,9 @@ and optional Developer ID signing/notarization.
 
 1. Start with **Load demo**, import WAV/AIFF/FLAC/MP3, or drop an audio file on the window.
 2. Choose **Find samples** for transient cuts, **Set slicer** for beat-grid cuts,
-   or **Set random** for repeatable randomized cuts. Choose 16 or 32 pad slots.
+   or **Set random** for repeatable cuts on detected beats. Choose 16 or 32 pad slots.
+   Sparse beat grids leave remaining pads empty; without detected beats, random
+   slicing uses the source BPM grid (sample cuts for clips shorter than one beat).
 3. Click a pad or play its computer/MIDI key. Edit its cue range, level, pitch,
    detune, stretch, filter, attack/release, and reverse settings in the inspector.
 4. Set source/project BPM and key; enable tempo/key sync as needed. Tempo estimates

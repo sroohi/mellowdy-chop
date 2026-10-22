@@ -32,7 +32,22 @@ jobs:
         run: ctest --test-dir build --build-config Release --output-on-failure
       - name: Verify universal executable
         run: |
-          lipo -verify_arch arm64 x86_64 build/Samplify_artefacts/Release/Samplify.app/Contents/MacOS/Samplify
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import subprocess
+
+          binary = Path("build/Samplify_artefacts/Release/Samplify.app/Contents/MacOS/Samplify")
+          result = subprocess.run(["/usr/bin/lipo", "-archs", str(binary)], check=True, capture_output=True, text=True)
+          architectures = set(result.stdout.split())
+          print(f"Native executable: {binary}")
+          print(f"Native executable architectures: {result.stdout.strip()}")
+          missing = {"arm64", "x86_64"} - architectures
+          if missing:
+              raise SystemExit(f"Universal executable is missing architectures: {sorted(missing)}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write(f"Universal app architectures verified: {', '.join(sorted(architectures))}.\n")
+          PY
           plutil -lint build/Samplify_artefacts/Release/Samplify.app/Contents/Info.plist
       - name: Launch native macOS demo and capture UI evidence
         env:
@@ -115,6 +130,11 @@ jobs:
         with:
           name: Samplify-macOS-universal
           path: dist
+      - name: Download native UI validation evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: Samplify-native-macOS-smoke
+          path: dist/native-smoke
       - name: Publish development prerelease
         env:
           GH_TOKEN: ${{ github.token }}
@@ -134,7 +154,7 @@ jobs:
           The build passed automated DSP, audio-rendering, and session tests, then launched the native macOS app, analysed the demo, rendered its pads, and saved UI screenshot evidence. The workflow's Samplify-native-macOS-smoke artifact contains the screenshot and report. Hardware audio, MIDI input, interactive editing, and first-launch trust still require human testing on a Mac. Stem controls use imported separated files; no neural separation model is bundled.
           NOTES
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/Samplify-macOS-universal.zip dist/Samplify-macOS-universal.dmg dist/SHA256SUMS.txt --clobber
+            gh release upload "$TAG" dist/Samplify-macOS-universal.zip dist/Samplify-macOS-universal.dmg dist/SHA256SUMS.txt dist/native-smoke/Samplify.png dist/native-smoke/smoke.json --clobber
           else
             gh release create "$TAG" \
               --target "$GITHUB_SHA" \
@@ -143,5 +163,7 @@ jobs:
               --prerelease \
               dist/Samplify-macOS-universal.zip \
               dist/Samplify-macOS-universal.dmg \
-              dist/SHA256SUMS.txt
+              dist/SHA256SUMS.txt \
+              dist/native-smoke/Samplify.png \
+              dist/native-smoke/smoke.json
           fi
