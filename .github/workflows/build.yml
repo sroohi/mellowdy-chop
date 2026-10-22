@@ -16,20 +16,65 @@ jobs:
   macos:
     name: Universal macOS app
     runs-on: macos-14
-    timeout-minutes: 45
+    timeout-minutes: 60
+    env:
+      SAMPLIFY_STEM_MODEL_FILE: ${{ github.workspace }}/.cache/models/ggml-model-htdemucs-4s-f16.bin
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+      - name: Set up build-time model converter
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Restore hash-pinned native stem model
+        id: stem-model-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/models/ggml-model-htdemucs-4s-f16.bin
+            .cache/models/ggml-model-htdemucs-4s-f16.bin.json
+          key: samplify-htdemucs-72b17c42d308982ddb5069bc3bf48b81a5aac4cb6516e4366c0fa7cef6df0064-${{ hashFiles('script/prepare_stem_model.py') }}
+      - name: Install build-time conversion dependencies
+        if: steps.stem-model-cache.outputs.cache-hit != 'true'
+        run: |
+          python - <<'PY'
+          import platform
+          import sys
+
+          if platform.machine().lower() != "arm64" or sys.version_info[:2] != (3, 12):
+              raise SystemExit("First-time model conversion requires an Apple Silicon build host with Python 3.12. The packaged C++ app remains universal.")
+          print(f"Build-time model converter: {platform.machine()}, Python {platform.python_version()}")
+          PY
+          python -m pip install --disable-pip-version-check --only-binary=:all: torch==2.6.0 numpy==2.2.6
+      - name: Prepare native model from pinned official checkpoint
+        if: steps.stem-model-cache.outputs.cache-hit != 'true'
+        run: python script/prepare_stem_model.py --output "$SAMPLIFY_STEM_MODEL_FILE"
+      - name: Verify native model checksum
+        run: python script/prepare_stem_model.py --verify-only --output "$SAMPLIFY_STEM_MODEL_FILE"
       - name: Configure universal Release build
         run: >-
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           '-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64'
           -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+          -DSAMPLIFY_STEM_MODEL_FILE="$SAMPLIFY_STEM_MODEL_FILE"
           -DBUILD_TESTING=ON
       - name: Build app and tests
-        run: cmake --build build --config Release --parallel 3
-      - name: Run DSP, audio, and session tests
-        run: ctest --test-dir build --build-config Release --output-on-failure
+        run: cmake --build build --config Release --parallel 2
+      - name: Verify all required test suites are registered
+        run: |
+          python3 - <<'PY'
+          import json
+          import subprocess
+
+          listing = subprocess.run(["ctest", "--test-dir", "build", "--build-config", "Release", "--show-only=json-v1"], check=True, capture_output=True, text=True)
+          suites = {test["name"] for test in json.loads(listing.stdout)["tests"]}
+          required = {"SamplifyCoreTests", "SamplifyCueEditingTests", "SamplifyMetadataTests", "SamplifyStretchTests", "SamplifyStemTests", "SamplifyIntegrationTests"}
+          if not required <= suites:
+              raise SystemExit(f"Required test suites are missing: {sorted(required - suites)}")
+          print("Required suites registered: " + ", ".join(sorted(required)))
+          PY
+      - name: Run cue editing, metadata, Rubber Band, neural stems, audio, and session tests
+        run: ctest --test-dir build --build-config Release --timeout 900 --output-on-failure
       - name: Verify universal executable
         run: |
           python3 - <<'PY'
@@ -69,7 +114,7 @@ jobs:
 
           directory = Path(os.environ["SAMPLIFY_SMOKE_DIR"])
           report_path = directory / "smoke.json"
-          deadline = time.monotonic() + 75
+          deadline = time.monotonic() + 270
           report = None
           while time.monotonic() < deadline:
               try:
@@ -78,17 +123,28 @@ jobs:
               except (FileNotFoundError, json.JSONDecodeError):
                   time.sleep(0.25)
           if report is None:
-              raise SystemExit("Native macOS app did not finish its demo smoke test within 75 seconds. Check launch/crash logs and GUI availability.")
-          for field in ("macOSRun", "demoAnalysedAndPadsRendered", "screenshotSaved"):
+              raise SystemExit("Native macOS app did not finish its controller and neural-stem smoke test within 270 seconds. Check launch/crash logs and GUI availability.")
+          for field in ("macOSRun", "demoAnalysedAndPadsRendered", "screenshotSaved", "blankScreenshotSaved", "stemSeparationCompleted"):
               if report.get(field) is not True:
                   raise SystemExit(f"Native app smoke test failed: {field} was not true: {report}")
-          image = (directory / "Samplify.png").read_bytes()
-          if len(image) < 24 or image[:8] != b"\x89PNG\r\n\x1a\n":
-              raise SystemExit("Native app did not save a valid PNG screenshot.")
-          width, height = struct.unpack(">II", image[16:24])
-          if width <= 0 or height <= 0 or (width, height) != (report.get("width"), report.get("height")):
-              raise SystemExit(f"Native app screenshot dimensions disagree with report: {width} x {height}: {report}")
-          print(f"Native macOS demo analysed audio and rendered pads; saved {width} x {height} UI evidence.")
+          for group, minimum in (("workflowChecks", 10), ("stemWorkflowChecks", 1)):
+              checks = report.get(group)
+              if not isinstance(checks, dict) or len(checks) < minimum:
+                  raise SystemExit(f"Native app smoke report requires at least {minimum} named boolean checks in {group}.")
+              failed = [name for name, passed in checks.items() if passed is not True]
+              if failed:
+                  raise SystemExit(f"Native app controller checks failed in {group}: {failed}")
+              print(f"Passed {len(checks)} native controller checks in {group}: {', '.join(sorted(checks))}")
+          for filename in ("Samplify.png", "Samplify-empty.png", "Samplify-compact.png"):
+              image = (directory / filename).read_bytes()
+              if len(image) < 24 or image[:8] != b"\x89PNG\r\n\x1a\n":
+                  raise SystemExit(f"Native app did not save a valid PNG screenshot: {filename}")
+              width, height = struct.unpack(">II", image[16:24])
+              if width <= 0 or height <= 0:
+                  raise SystemExit(f"Native app screenshot has invalid dimensions: {filename}")
+              if filename == "Samplify.png" and (width, height) != (report.get("width"), report.get("height")):
+                  raise SystemExit(f"Native app screenshot dimensions disagree with report: {width} x {height}: {report}")
+              print(f"Native macOS UI evidence: {filename}, {width} x {height}.")
           PY
       - name: Upload native macOS UI evidence
         if: always()
@@ -97,6 +153,7 @@ jobs:
           name: Samplify-native-macOS-smoke
           path: |
             ${{ runner.temp }}/samplify-smoke/Samplify.png
+            ${{ runner.temp }}/samplify-smoke/Samplify-empty.png
             ${{ runner.temp }}/samplify-smoke/Samplify-compact.png
             ${{ runner.temp }}/samplify-smoke/smoke.json
           if-no-files-found: warn
@@ -111,6 +168,9 @@ jobs:
             dist/Samplify-macOS-universal.zip
             dist/Samplify-macOS-universal.dmg
             dist/SHA256SUMS.txt
+            dist/ggml-model-htdemucs-4s-f16.bin
+            dist/HTDemucs-model-provenance.json
+            dist/HTDemucs-MIT.txt
           if-no-files-found: error
           retention-days: 30
 
@@ -143,27 +203,34 @@ jobs:
         run: |
           set -euo pipefail
           SHORT_SHA="${GITHUB_SHA:0:7}"
-          TAG="samplify-v0.1.0-$SHORT_SHA"
+          TAG="samplify-v0.2.0-$SHORT_SHA"
           cat > release-notes.md <<'NOTES'
-          Standalone Samplify development preview for macOS 12 and later, with universal Apple Silicon and Intel binaries.
+          Samplify 0.2.0 standalone development preview for macOS 12 and later, with universal Apple Silicon and Intel binaries. Its sampling workflow is informed by the Serato Sample 2.x manual; this independent app does not include Serato's proprietary processing or claim exact parity.
 
-          Download the DMG and drag Samplify to Applications, or extract the app ZIP. SHA256SUMS.txt contains checksums for both files.
+          Download the DMG and drag Samplify to Applications, or extract the app ZIP. The native four-stem HTDemucs model is bundled, and the app does not need Python, a separate model download, or an online account at runtime. Rubber Band supplies independent native pitch/time processing. SHA256SUMS.txt contains package and standalone-model checksums.
 
           This development build is ad-hoc signed. It is not Developer ID signed or notarized. macOS Gatekeeper may require explicit approval in Privacy & Security. Do not disable Gatekeeper globally.
 
-          The build passed automated DSP, audio-rendering, and session tests, then launched the native macOS app, analysed the demo, rendered its pads, and saved UI screenshot evidence. The workflow's Samplify-native-macOS-smoke artifact contains the screenshot and report. Hardware audio, MIDI input, interactive editing, and first-launch trust still require human testing on a Mac. Stem controls use imported separated files; no neural separation model is bundled.
+          The build passed core DSP, cue editing, metadata, Rubber Band, actual neural-stem inference, audio-rendering, and session test suites. It then launched the native macOS app, checked its empty load screen, exercised controller workflows, completed neural stem separation through the UI, and captured full/compact UI screenshots plus a checked JSON report. Samplify.png, Samplify-empty.png, Samplify-compact.png, and smoke.json provide the native evidence. These checks do not establish exact Serato parity. Hardware audio, MIDI input, musical quality, remaining interactive acceptance, and first-launch trust still require human testing on a Mac.
+
+          The separate ggml-model-htdemucs-4s-f16.bin asset supports source builds without PyTorch conversion, including on Intel Macs. Preserve its accompanying HTDemucs-model-provenance.json and HTDemucs-MIT.txt notices. Normal app users already have this model inside the app bundle.
           NOTES
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/Samplify-macOS-universal.zip dist/Samplify-macOS-universal.dmg dist/SHA256SUMS.txt dist/native-smoke/Samplify.png dist/native-smoke/smoke.json --clobber
+            gh release upload "$TAG" dist/Samplify-macOS-universal.zip dist/Samplify-macOS-universal.dmg dist/SHA256SUMS.txt dist/ggml-model-htdemucs-4s-f16.bin dist/HTDemucs-model-provenance.json dist/HTDemucs-MIT.txt dist/native-smoke/Samplify.png dist/native-smoke/Samplify-empty.png dist/native-smoke/Samplify-compact.png dist/native-smoke/smoke.json --clobber
           else
             gh release create "$TAG" \
               --target "$GITHUB_SHA" \
-              --title "Samplify 0.1.0 development preview ($SHORT_SHA)" \
+              --title "Samplify 0.2.0 development preview ($SHORT_SHA)" \
               --notes-file release-notes.md \
               --prerelease \
               dist/Samplify-macOS-universal.zip \
               dist/Samplify-macOS-universal.dmg \
               dist/SHA256SUMS.txt \
+              dist/ggml-model-htdemucs-4s-f16.bin \
+              dist/HTDemucs-model-provenance.json \
+              dist/HTDemucs-MIT.txt \
               dist/native-smoke/Samplify.png \
+              dist/native-smoke/Samplify-empty.png \
+              dist/native-smoke/Samplify-compact.png \
               dist/native-smoke/smoke.json
           fi

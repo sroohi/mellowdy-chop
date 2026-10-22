@@ -7,6 +7,7 @@ struct Session {
     Project project;
     juce::File source;
     std::array<juce::File, 4> stems;
+    juce::String migrationNotice;
 };
 // Versioned JSON sessions reference audio files; they never embed audio data.
 void saveSession(const juce::File& file, const Session& session);

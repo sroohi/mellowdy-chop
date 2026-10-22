@@ -3,12 +3,102 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <functional>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <new>
 #include <stdexcept>
 #include <string>
+
+// C++ allocation/deallocation is probed on the calling thread. Linux additionally
+// wraps direct C allocator calls from linked code, as described below.
+namespace callbackHeapProbe {
+thread_local bool enabled = false;
+thread_local std::size_t allocations = 0;
+thread_local std::size_t deallocations = 0;
+thread_local std::size_t cAllocatorCalls = 0;
+thread_local std::size_t cFreeCalls = 0;
+void allocated() noexcept { if (enabled) ++allocations; }
+void deallocated(void* pointer) noexcept { if (enabled && pointer) ++deallocations; }
+}
+
+#if defined(SAMPLIFY_WRAP_C_ALLOCATIONS)
+// GNU ld wrapping intercepts direct C-allocator references from this executable
+// and its linked static libraries. Calls inside shared system libraries are not
+// intercepted, so this is deliberately not a claim about every OS allocation.
+extern "C" {
+void* __real_malloc(std::size_t) noexcept;
+void* __real_calloc(std::size_t, std::size_t) noexcept;
+void* __real_realloc(void*, std::size_t) noexcept;
+void __real_free(void*) noexcept;
+int __real_posix_memalign(void**, std::size_t, std::size_t) noexcept;
+void* __real_aligned_alloc(std::size_t, std::size_t) noexcept;
+void* __wrap_malloc(std::size_t size) noexcept {
+    if (callbackHeapProbe::enabled) ++callbackHeapProbe::cAllocatorCalls;
+    return __real_malloc(size);
+}
+void* __wrap_calloc(std::size_t count, std::size_t size) noexcept {
+    if (callbackHeapProbe::enabled) ++callbackHeapProbe::cAllocatorCalls;
+    return __real_calloc(count, size);
+}
+void* __wrap_realloc(void* pointer, std::size_t size) noexcept {
+    if (callbackHeapProbe::enabled) ++callbackHeapProbe::cAllocatorCalls;
+    return __real_realloc(pointer, size);
+}
+void __wrap_free(void* pointer) noexcept {
+    if (callbackHeapProbe::enabled && pointer) ++callbackHeapProbe::cFreeCalls;
+    __real_free(pointer);
+}
+int __wrap_posix_memalign(void** pointer, std::size_t alignment, std::size_t size) noexcept {
+    if (callbackHeapProbe::enabled) ++callbackHeapProbe::cAllocatorCalls;
+    return __real_posix_memalign(pointer, alignment, size);
+}
+void* __wrap_aligned_alloc(std::size_t alignment, std::size_t size) noexcept {
+    if (callbackHeapProbe::enabled) ++callbackHeapProbe::cAllocatorCalls;
+    return __real_aligned_alloc(alignment, size);
+}
+}
+#endif
+
+void* operator new(std::size_t size) {
+    callbackHeapProbe::allocated();
+    if (void* pointer = std::malloc(std::max<std::size_t>(1, size))) return pointer;
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t size) { return ::operator new(size); }
+void operator delete(void* pointer) noexcept { callbackHeapProbe::deallocated(pointer); std::free(pointer); }
+void operator delete[](void* pointer) noexcept { ::operator delete(pointer); }
+void operator delete(void* pointer, std::size_t) noexcept { ::operator delete(pointer); }
+void operator delete[](void* pointer, std::size_t) noexcept { ::operator delete(pointer); }
+void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
+    try { return ::operator new(size); } catch (...) { return nullptr; }
+}
+void* operator new[](std::size_t size, const std::nothrow_t&) noexcept {
+    try { return ::operator new(size); } catch (...) { return nullptr; }
+}
+void operator delete(void* pointer, const std::nothrow_t&) noexcept { ::operator delete(pointer); }
+void operator delete[](void* pointer, const std::nothrow_t&) noexcept { ::operator delete(pointer); }
+void* operator new(std::size_t size, std::align_val_t alignment) {
+    callbackHeapProbe::allocated();
+    void* pointer = nullptr;
+    if (posix_memalign(&pointer, static_cast<std::size_t>(alignment), std::max<std::size_t>(1, size)) == 0) return pointer;
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t size, std::align_val_t alignment) { return ::operator new(size, alignment); }
+void operator delete(void* pointer, std::align_val_t) noexcept { ::operator delete(pointer); }
+void operator delete[](void* pointer, std::align_val_t) noexcept { ::operator delete(pointer); }
+void operator delete(void* pointer, std::size_t, std::align_val_t) noexcept { ::operator delete(pointer); }
+void operator delete[](void* pointer, std::size_t, std::align_val_t) noexcept { ::operator delete(pointer); }
+void* operator new(std::size_t size, std::align_val_t alignment, const std::nothrow_t&) noexcept {
+    try { return ::operator new(size, alignment); } catch (...) { return nullptr; }
+}
+void* operator new[](std::size_t size, std::align_val_t alignment, const std::nothrow_t&) noexcept {
+    try { return ::operator new(size, alignment); } catch (...) { return nullptr; }
+}
+void operator delete(void* pointer, std::align_val_t, const std::nothrow_t&) noexcept { ::operator delete(pointer); }
+void operator delete[](void* pointer, std::align_val_t, const std::nothrow_t&) noexcept { ::operator delete(pointer); }
 
 namespace {
 using namespace samplify;
@@ -76,7 +166,8 @@ Project projectFor(const AudioData& audio) {
     auto& pad = project.pads[0];
     pad.start = 0;
     pad.end = audio.frames();
-    pad.attackMs = pad.releaseMs = 0;
+    pad.attackMs = 0;
+    pad.releaseMs = 50;
     project.pads[1] = pad;
     return project;
 }
@@ -105,13 +196,17 @@ float processBlock(AudioEngine& engine, juce::AudioBuffer<float>& buffer) {
 }
 
 void testAudioFiles(Checks& c, const juce::File& directory) {
-    const auto original = tone();
+    auto original = tone();
+    original.artist = "Test Artist";
+    original.title = "Test Track";
     const auto file = directory.getChildFile("stereo.wav");
     AudioEngine::writeAudio(file, original);
     const auto loaded = AudioEngine::readAudio(file);
     c.require(loaded.valid() && loaded.channels.size() == 2, "WAV stereo import returns valid two-channel samples");
     c.require(loaded.frames() == original.frames() && loaded.sampleRate == original.sampleRate,
               "WAV export preserves frame count and sample rate");
+    c.require(loaded.artist == original.artist && loaded.title == original.title,
+              "WAV RIFF metadata roundtrip preserves actual artist and track title");
     double error = 0;
     for (std::size_t channel = 0; channel < loaded.channels.size(); ++channel)
         for (std::size_t i = 0; i < loaded.frames(); ++i)
@@ -145,17 +240,33 @@ void testSessions(Checks& c, const juce::File& directory) {
     saved.project.syncTempo = true;
     saved.project.syncKey = true;
     saved.project.quantize = true;
+    saved.project.playbackMode = CuePlaybackMode::Trigger;
+    saved.project.velocityEnabled = true;
+    saved.project.pitchTimeEnabled = false;
+    saved.project.keyboardMode = true;
+    saved.project.globalPitchSemitones = -3;
+    saved.project.globalDetuneCents = 22;
+    saved.project.glideMs = 420;
+    saved.project.glideMode = GlideMode::Sustain;
+    saved.project.stemMute = {false, true, false, true};
+    saved.project.beatgridEnabled = false;
+    saved.project.tempoMarkers = {{0, 123}, {7000, 98}};
     auto& pad = saved.project.pads[31];
     pad.start = 441;
     pad.end = 4410;
     pad.levelDb = -9.5f;
     pad.pitchSemitones = 7;
     pad.detuneCents = -12;
-    pad.timeRatio = 1.5f;
+    pad.speedRatio = 1.5f;
     pad.filter = 0.73f;
     pad.attackMs = 24;
     pad.releaseMs = 400;
     pad.reverse = true;
+    pad.hasEnd = false;
+    pad.favorite = true;
+    pad.name = "A favorite cue";
+    pad.colour = 0xffc15d29;
+    pad.outputChannel = 5;
     pad.stemMute = { true, false, true, false };
     const auto file = directory.getChildFile("session.samplify");
     saveSession(file, saved);
@@ -168,9 +279,19 @@ void testSessions(Checks& c, const juce::File& directory) {
     const auto& readPad = restored.project.pads[31];
     c.require(readPad.start == pad.start && readPad.end == pad.end && readPad.levelDb == pad.levelDb
         && readPad.pitchSemitones == pad.pitchSemitones && readPad.detuneCents == pad.detuneCents
-        && readPad.timeRatio == pad.timeRatio && readPad.filter == pad.filter
+        && readPad.speedRatio == pad.speedRatio && readPad.filter == pad.filter
         && readPad.attackMs == pad.attackMs && readPad.releaseMs == pad.releaseMs
-        && readPad.reverse && readPad.stemMute == pad.stemMute, "Session restores every pad edit including stem mutes");
+        && readPad.reverse && readPad.stemMute == pad.stemMute && readPad.hasEnd == pad.hasEnd
+        && readPad.favorite && readPad.name == pad.name && readPad.colour == pad.colour
+        && readPad.outputChannel == pad.outputChannel, "Session restores every cue edit, color, name, favorite and routing");
+    c.require(restored.project.playbackMode == CuePlaybackMode::Trigger && restored.project.velocityEnabled
+        && !restored.project.pitchTimeEnabled && restored.project.keyboardMode
+        && restored.project.globalPitchSemitones == -3 && restored.project.globalDetuneCents == 22
+        && restored.project.glideMs == 420 && restored.project.glideMode == GlideMode::Sustain
+        && restored.project.stemMute == saved.project.stemMute && !restored.project.beatgridEnabled,
+        "Session restores global performance, glide, stems and cleared beatgrid state");
+    c.require(restored.project.tempoMarkers.size() == 2 && restored.project.tempoMarkers[1].frame == 7000
+        && restored.project.tempoMarkers[1].bpm == 98, "Session restores edited piecewise tempo markers");
     const auto originalText = file.loadFileAsString();
 
     const auto malformed = directory.getChildFile("malformed.samplify");
@@ -178,19 +299,48 @@ void testSessions(Checks& c, const juce::File& directory) {
     c.rejects([&] { (void) loadSession(malformed); }, "Malformed session JSON is rejected");
     malformed.replaceWithText("{}");
     c.rejects([&] { (void) loadSession(malformed); }, "Missing session schema is rejected");
-    malformed.replaceWithText(originalText.replace("\"version\": 1", "\"version\": 2"));
+    auto badVersion = juce::JSON::parse(originalText);
+    badVersion.getDynamicObject()->setProperty("version", 999);
+    malformed.replaceWithText(juce::JSON::toString(badVersion));
     c.rejects([&] { (void) loadSession(malformed); }, "Unsupported session version is rejected");
     malformed.replaceWithText(originalText.replace("\"padCount\": 32", "\"padCount\": 17"));
     c.rejects([&] { (void) loadSession(malformed); }, "Unsupported pad count is rejected");
     auto invalid = saved;
-    invalid.project.pads[0].timeRatio = -1;
+    invalid.project.pads[0].speedRatio = -1;
     c.rejects([&] { saveSession(file, invalid); }, "Session save validates invalid state before replacement");
     c.require(file.loadFileAsString() == originalText, "Failed session save preserves prior document");
+
+    // Earlier Samplify sessions stored a duration multiplier. Its inverse is
+    // required by the reference cue-speed convention (2x means half duration).
+    auto legacy = juce::JSON::parse(originalText);
+    legacy.getDynamicObject()->setProperty("version", 1);
+    auto oldProject = legacy.getProperty("project", juce::var());
+    for (const auto* field : {"playbackMode", "velocityEnabled", "pitchTimeEnabled", "keyboardMode",
+                             "globalPitchSemitones", "globalDetuneCents", "glideMs", "glideMode",
+                             "stemMute", "tempoMarkers", "beatgridEnabled"})
+        oldProject.getDynamicObject()->removeProperty(field);
+    auto oldPads = oldProject.getProperty("pads", juce::var());
+    for (int index = 0; index < oldPads.size(); ++index) {
+        auto* object = oldPads[index].getDynamicObject();
+        object->setProperty("timeRatio", 2.0);
+        object->setProperty("releaseMs", 150.0);
+        for (const auto* field : {"speedRatio", "hasEnd", "favorite", "name", "colour", "outputChannel"})
+            object->removeProperty(field);
+    }
+    const auto legacyFile = directory.getChildFile("legacy.samplify");
+    legacyFile.replaceWithText(juce::JSON::toString(legacy));
+    const auto migrated = loadSession(legacyFile);
+    c.require(std::abs(migrated.project.pads[31].speedRatio - .5f) < .00001f,
+              "Version-one duration multiplier migrates to reciprocal cue speed");
+    c.require(migrated.project.playbackMode == CuePlaybackMode::Hold && !migrated.project.pads[31].favorite
+        && migrated.project.beatgridEnabled,
+              "Legacy session receives explicit default performance and cue metadata");
 }
 
 void testStemsAndExport(Checks& c) {
     auto source = std::make_shared<AudioData>(constant(0.55f));
     auto p = projectFor(*source);
+    p.pads[0].releaseMs = 0;
     AudioEngine engine;
     engine.setSource(source);
     c.require(std::abs(mean(engine.renderForExport(p, 0)) - 0.55) < 0.001, "Without stems export uses original source");
@@ -217,13 +367,14 @@ void testStemsAndExport(Checks& c) {
     source = std::make_shared<AudioData>(tone(440, 44100));
     engine.setSource(source);
     p = projectFor(*source);
-    p.syncTempo = true;
+    p.syncTempo = false;
     p.projectBpm = 180;
     const auto stretched = engine.renderForExport(p, 0);
     c.require(stretched.valid() && std::abs(static_cast<double>(stretched.frames()) - 29400.0) < 3,
-              "BPM sync exports expected independent duration");
-    c.require(std::abs(positiveCrossingFrequency(stretched) - 440) < 12, "BPM sync preserves source pitch");
+              "Current BPM exports expected independent duration even without host sync");
+    c.require(std::abs(positiveCrossingFrequency(stretched) - 440) < 12, "Current BPM preserves source pitch");
     p.syncTempo = false;
+    p.projectBpm = p.sourceBpm;
     p.pads[0].pitchSemitones = 12;
     const auto pitched = engine.renderForExport(p, 0);
     c.require(pitched.valid() && std::abs(static_cast<double>(pitched.frames()) - 44100.0) < 3,
@@ -243,14 +394,53 @@ void testStemsAndExport(Checks& c) {
     engine.setSource(source);
     p = projectFor(*source);
     p.pads[0].reverse = true;
+    p.pads[0].releaseMs = 0;
     const auto reversed = engine.renderForExport(p, 0);
     c.require(reversed.valid() && reversed.channels[0].front() > 0.99f && reversed.channels[0].back() < 0.001f,
               "Reverse export changes cue audio order");
+
+    source = std::make_shared<AudioData>(constant(.2f, 44100));
+    engine.setSource(source);
+    p = projectFor(*source);
+    p.pads[0].attackMs = 20;
+    p.pads[0].releaseMs = 80;
+    const auto heldExport = engine.renderForExport(p, 0);
+    c.require(heldExport.valid() && heldExport.frames() == source->frames()
+        && heldExport.channels[0].front() == 0 && std::abs(heldExport.channels[0].back() - .2f) < .001f,
+        "Hold export keeps full finite cue and attack without inventing an external note-off release");
+    p.playbackMode = CuePlaybackMode::Trigger;
+    const auto triggeredExport = engine.renderForExport(p, 0);
+    c.require(triggeredExport.valid() && std::abs(static_cast<double>(triggeredExport.frames()) - 4410) <= 1
+        && std::abs(triggeredExport.channels[0].back()) < .001f,
+        "Trigger export ends after attack plus release instead of exporting remaining source tail");
+    p.playbackMode = CuePlaybackMode::Hold;
+    p.pitchTimeEnabled = false;
+    p.projectBpm = 240;
+    p.pads[0].attackMs = 0;
+    p.pads[0].pitchSemitones = 12;
+    const auto bypass = engine.renderForExport(p, 0);
+    c.require(bypass.valid() && std::abs(static_cast<double>(bypass.frames()) - 11025) <= 1,
+        "Pitch/time bypass combines Current BPM with octave varispeed in exported duration");
+}
+
+float processMany(AudioEngine& engine, juce::AudioBuffer<float>& buffer, int blocks) {
+    float peak = 0;
+    for (int i = 0; i < blocks; ++i) peak = std::max(peak, processBlock(engine, buffer));
+    return peak;
+}
+
+void stopAndDrain(AudioEngine& engine, juce::AudioBuffer<float>& buffer) {
+    engine.stop();
+    processMany(engine, buffer, 4);
 }
 
 void testPlaybackAndMidi(Checks& c) {
-    auto source = std::make_shared<AudioData>(tone(220, 44100));
+    auto source = std::make_shared<AudioData>(tone(220, 176400));
     auto p = projectFor(*source);
+    p.pads[0].start = 1000;
+    p.pads[0].attackMs = 5;
+    p.pads[0].releaseMs = 30;
+    p.pads[1] = p.pads[0];
     AudioEngine engine;
     engine.setSource(source);
     engine.preparePads(p);
@@ -259,99 +449,575 @@ void testPlaybackAndMidi(Checks& c) {
     juce::AudioBuffer<float> output(2, 512);
     c.require(processBlock(engine, output) == 0 && engine.activeVoiceCount() == 0, "Untriggered callback produces silence");
     engine.triggerPad(0);
-    c.require(processBlock(engine, output) > 0.05f && engine.activeVoiceCount() == 1,
-              "Pad trigger produces audible stereo buffer without hardware");
+    c.require(processMany(engine, output, 4) > 0.05f && engine.activeVoiceCount() == 1,
+              "Hold trigger produces audible stereo buffer without hardware");
     c.require(std::isfinite(engine.peakLevel()) && engine.peakLevel() > 0, "Meter reports finite playback peak");
-    engine.setMono(false);
-    engine.triggerPad(1);
-    processBlock(engine, output);
-    c.require(engine.activeVoiceCount() == 2, "Poly mode mixes simultaneous pad voices");
-    engine.setMono(true);
-    engine.triggerPad(0);
-    processBlock(engine, output);
-    c.require(engine.activeVoiceCount() == 1, "Mono retrigger fades prior voices within 5 ms");
+    c.require((engine.playbackSnapshot().activeCueMask & 1u) != 0 && engine.playbackSnapshot().lastTriggeredPad == 0,
+              "Snapshot identifies sounding selected cue");
     engine.releasePad(0);
     processBlock(engine, output);
-    c.require(engine.activeVoiceCount() == 0, "Note release obeys zero-length pad release");
-    engine.triggerPad(0);
-    processBlock(engine, output);
-    engine.stop();
-    processBlock(engine, output);
-    c.require(engine.activeVoiceCount() == 0, "Stop fades all active voices");
-    c.require(processBlock(engine, output) == 0, "Stopped callback returns silence");
+    c.require(engine.activeVoiceCount() == 1, "Hold release begins when trigger is released rather than at attack end");
+    processMany(engine, output, 4);
+    c.require(engine.activeVoiceCount() == 0 && engine.playbackSnapshot().sourceFrame == p.pads[0].start,
+              "Hold release completion silences cue and returns playhead to cue start");
 
-    engine.handleIncomingMidiMessage(nullptr, juce::MidiMessage::noteOn(1, 36, static_cast<juce::uint8>(100)));
+    p.pads[0].end = p.pads[0].start + 4410;
+    p.pads[0].hasEnd = true;
+    engine.setLiveProject(p);
+    engine.triggerPad(0);
+    processMany(engine, output, 12);
+    c.require(engine.activeVoiceCount() == 1 && engine.playbackSnapshot().sourceFrame == p.pads[0].end,
+              "Held cue with set length pauses at its end until trigger release");
+    c.require(processBlock(engine, output) == 0, "Held cue at set end emits silence");
+    engine.releasePad(0);
     processBlock(engine, output);
-    c.require(engine.activeVoiceCount() == 1, "Default MIDI note 36 triggers Pad 1");
-    engine.handleIncomingMidiMessage(nullptr, juce::MidiMessage::noteOff(1, 36));
+    c.require(engine.activeVoiceCount() == 0 && engine.playbackSnapshot().sourceFrame == p.pads[0].start,
+              "Releasing held cue at set end returns playhead to start");
+
+    p.pads[0].end = source->frames();
+    p.playbackMode = CuePlaybackMode::Trigger;
+    p.pads[0].attackMs = 30;
+    p.pads[0].releaseMs = 100;
+    engine.setLiveProject(p);
+    engine.triggerPad(0);
+    const float triggerPeak = processMany(engine, output, 6);
+    engine.releasePad(0);
+    processMany(engine, output, 3);
+    c.require(triggerPeak > 0.05f && engine.activeVoiceCount() == 1,
+              "Trigger mode ignores note-off while attack/release envelope is running");
+    processMany(engine, output, 6);
+    const auto triggerEnd = engine.playbackSnapshot().sourceFrame;
+    c.require(engine.activeVoiceCount() == 0 && triggerEnd > p.pads[0].start && triggerEnd < p.pads[0].end,
+              "Trigger mode begins release after attack and finishes before a longer cue end");
+    processMany(engine, output, 2);
+    c.require(engine.playbackSnapshot().sourceFrame == triggerEnd,
+              "Trigger envelope completion leaves playhead stationary instead of returning to start");
+
+    p.playbackMode = CuePlaybackMode::Hold;
+    p.pads[0].attackMs = 0;
+    p.pads[0].releaseMs = 30;
+    p.quantize = true;
+    engine.setLiveProject(p);
+    engine.triggerPad(0);
+    c.require(processBlock(engine, output) > 0.05f,
+              "Quantize affects cue editing and does not delay playback trigger to a beat");
+    stopAndDrain(engine, output);
+    engine.handleIncomingMidiMessage(nullptr, juce::MidiMessage::noteOn(1, 24, static_cast<juce::uint8>(100)));
     processBlock(engine, output);
-    c.require(engine.activeVoiceCount() == 0, "MIDI note-off releases mapped pad");
-    engine.learnMidiPad(1);
+    c.require(engine.playbackSnapshot().lastTriggeredPad == 0 && engine.activeVoiceCount() == 1,
+              "Default first displayed MIDI note 24 triggers Cue 1");
+    engine.handleIncomingMidiMessage(nullptr, juce::MidiMessage::noteOff(1, 24));
+    processMany(engine, output, 5);
+
+    engine.seekSource(5000);
+    processBlock(engine, output);
+    c.require(engine.playbackSnapshot().sourceFrame == 5000 && !engine.playbackSnapshot().sourcePlaying,
+              "Source seek positions paused transport without sounding a cue");
+    engine.playSource();
+    c.require(processMany(engine, output, 4) > 0.05f && engine.playbackSnapshot().sourcePlaying,
+              "Source Play auditions actual audio independently of cue triggers");
+    c.require(engine.playbackSnapshot().sourceFrame > 5000, "Source audition advances its playhead");
+    engine.pauseSource();
+    processBlock(engine, output);
+    const auto pausedFrame = engine.playbackSnapshot().sourceFrame;
+    c.require(!engine.playbackSnapshot().sourcePlaying && processBlock(engine, output) == 0,
+              "Source Pause stops audition audio");
+    c.require(engine.playbackSnapshot().sourceFrame == pausedFrame, "Paused source transport keeps its current position");
+    engine.seekSource(9000);
+    engine.playSource();
+    processBlock(engine, output);
+    c.require(engine.playbackSnapshot().sourceFrame >= 9000 && engine.playbackSnapshot().sourceFrame < 10000,
+              "Seek followed by Play starts audition near requested source frame");
+    engine.pauseSource();
+    processBlock(engine, output);
+
+    engine.seekSource(7000);
+    processBlock(engine, output);
+    const auto eventBefore = engine.playbackSnapshot().pendingCueSerial;
+    engine.learnMidiPad(15);
     engine.handleIncomingMidiMessage(nullptr, juce::MidiMessage::noteOn(1, 80, static_cast<juce::uint8>(100)));
     processBlock(engine, output);
-    c.require(engine.activeVoiceCount() == 1 && engine.midiStatus().contains("80"), "MIDI learn maps next note to selected pad");
-    engine.handleIncomingMidiMessage(nullptr, juce::MidiMessage::allNotesOff(1));
+    const auto pending = engine.playbackSnapshot();
+    c.require(pending.pendingCuePad == 15 && pending.pendingCueFrame == 7000 && pending.pendingCueSerial > eventBefore,
+              "MIDI empty pad emits a cue-assignment event at current playhead");
+    c.require(std::abs(pending.pendingCueVelocity - 100.0f / 127) < .001f && pending.pendingCueSemitoneOffset == 0,
+              "Empty-cue event retains velocity and pitch for assignment-and-trigger completion");
+    c.require(engine.activeVoiceCount() == 0 && engine.midiStatus().contains("80"),
+              "Learning an empty cue maps its note without fabricating existing audio");
+    engine.handleIncomingMidiMessage(nullptr, juce::MidiMessage::noteOff(1, 80));
     processBlock(engine, output);
-    c.require(engine.activeVoiceCount() == 0, "MIDI all-notes-off stops voices");
-    engine.setKeyboardMode(true, 0);
-    engine.handleIncomingMidiMessage(nullptr, juce::MidiMessage::noteOn(1, 72, static_cast<juce::uint8>(100)));
-    c.require(processBlock(engine, output) > 0.05f && engine.activeVoiceCount() == 1,
-              "Keyboard mode maps arbitrary MIDI note to selected pad");
-    engine.releaseResources();
-    c.require(engine.activeVoiceCount() == 0 && engine.peakLevel() == 0, "Resource release clears voices and meter");
+    c.require(engine.playbackSnapshot().pendingCueSerial == pending.pendingCueSerial,
+              "MIDI note-off cannot duplicate cue-assignment event");
 
-    // Quantize is tied to the engine's beat clock, not to callback arrival.
-    engine.prepareToPlay(512, 44100);
-    processBlock(engine, output); // Move just beyond the first beat.
-    engine.triggerPad(0, true);
-    float beforeBeat = processBlock(engine, output);
-    for (int block = 0; block < 41; ++block)
-        beforeBeat = std::max(beforeBeat, processBlock(engine, output));
-    c.require(beforeBeat == 0 && engine.activeVoiceCount() == 1, "Quantized trigger remains silent while awaiting next beat");
-    c.require(processBlock(engine, output) > 0.05f, "Quantized trigger sounds when internal beat is reached");
-    engine.stop();
+    p.quantize = false;
+    p.mono = false;
+    for (auto& cue : p.pads) cue = p.pads[0];
+    engine.setLiveProject(p);
+    for (int cue = 0; cue < 32; ++cue) engine.triggerPad(cue);
     processBlock(engine, output);
+    c.require(engine.activeVoiceCount() == 32 && engine.playbackSnapshot().activeCueMask == 0xffffffffu,
+              "Poly mode supports all 32 independently active cue voices");
+    engine.setMono(true);
+    engine.triggerPad(4);
+    processMany(engine, output, 3);
+    c.require(engine.activeVoiceCount() == 1 && engine.playbackSnapshot().activeCueMask == (1u << 4),
+              "Mono retrigger crossfades prior voices to one selected cue");
+    stopAndDrain(engine, output);
 
-    engine.setMono(false);
+    p.mono = false;
+    p.keyboardMode = true;
+    engine.setLiveProject(p);
     engine.setKeyboardMode(true, 0);
     engine.handleIncomingMidiMessage(nullptr, juce::MidiMessage::noteOn(1, 60, static_cast<juce::uint8>(100)));
     engine.handleIncomingMidiMessage(nullptr, juce::MidiMessage::noteOn(1, 72, static_cast<juce::uint8>(100)));
-    processBlock(engine, output);
-    c.require(engine.activeVoiceCount() == 2, "Keyboard polyphony allows two pitches of one selected pad");
+    c.require(processMany(engine, output, 8) > 0.05f && engine.activeVoiceCount() == 2,
+              "Keyboard polyphony plays two pitches of selected cue");
     engine.handleIncomingMidiMessage(nullptr, juce::MidiMessage::noteOff(1, 72));
-    processBlock(engine, output);
-    c.require(engine.activeVoiceCount() == 1, "Keyboard note-off releases only its pitch");
-    engine.stop();
-    processBlock(engine, output);
+    processMany(engine, output, 5);
+    c.require(engine.activeVoiceCount() == 1, "Keyboard note-off releases only its own pitch");
+    engine.handleIncomingMidiMessage(nullptr, juce::MidiMessage::allNotesOff(1));
+    processMany(engine, output, 4);
+    c.require(engine.activeVoiceCount() == 0, "MIDI all-notes-off silences cue voices");
 
-    // A panic stop must survive a producer burst larger than the FIFO capacity.
-    for (int command = 0; command < 300; ++command) engine.triggerPad(command % 2);
+    // Deliberately exceed the bounded command FIFO; panic stop must survive.
+    for (int command = 0; command < 1100; ++command) engine.triggerPad(command % 32);
     engine.stop();
-    processBlock(engine, output);
-    c.require(engine.activeVoiceCount() == 0, "Panic stop is honored even when the control queue overflows");
-
+    processMany(engine, output, 4);
+    c.require(engine.activeVoiceCount() == 0, "Panic stop is honored when producer burst overflows control queue");
+    c.require(processBlock(engine, output) == 0, "Stopped callback produces silence");
     juce::AudioBuffer<float> region(2, 1024);
     for (int channel = 0; channel < region.getNumChannels(); ++channel)
-        for (int sample = 0; sample < region.getNumSamples(); ++sample) region.setSample(channel, sample, 0.2f);
+        for (int sample = 0; sample < region.getNumSamples(); ++sample) region.setSample(channel, sample, .2f);
     engine.getNextAudioBlock(juce::AudioSourceChannelInfo(&region, 128, 512));
-    c.require(region.getSample(0, 0) == 0.2f && region.getSample(1, 1023) == 0.2f
-        && region.getMagnitude(128, 512) == 0, "Callback clears only the requested output region");
+    c.require(region.getSample(0, 0) == .2f && region.getSample(1, 1023) == .2f
+        && region.getMagnitude(128, 512) == 0, "Callback clears only requested output region");
+    engine.releaseResources();
+    c.require(engine.activeVoiceCount() == 0 && engine.peakLevel() == 0, "Resource release clears voices and meter");
 }
+
+void testLiveControlsVelocityAndKeyboard(Checks& c) {
+    auto source = std::make_shared<AudioData>(tone(220, 132300));
+    auto p = projectFor(*source);
+    p.pads[0].attackMs = 0;
+    p.pads[0].releaseMs = 40;
+    AudioEngine engine;
+    engine.setSource(source);
+    engine.preparePads(p);
+    engine.prepareToPlay(512, 44100);
+    engine.setMasterGain(1);
+    juce::AudioBuffer<float> output(2, 512);
+    engine.triggerPad(0);
+    processMany(engine, output, 8);
+    const float initialPeak = processMany(engine, output, 4);
+    p.pads[0].levelDb = -12;
+    engine.setLiveProject(p); // No cache rebuild and no new note.
+    const float reducedPeak = processMany(engine, output, 4);
+    c.require(initialPeak > .1f && reducedPeak > .02f && reducedPeak < initialPeak * .3f,
+              "Live cue gain affects already sounding voice without preparing pads or retriggering");
+    stopAndDrain(engine, output);
+    p.pads[0].levelDb = 0;
+    p.velocityEnabled = true;
+    engine.setLiveProject(p);
+    engine.triggerPad(0, 0, 1);
+    processMany(engine, output, 4);
+    const auto loud = processMany(engine, output, 4);
+    stopAndDrain(engine, output);
+    engine.triggerPad(0, 0, .25f);
+    processMany(engine, output, 4);
+    const auto soft = processMany(engine, output, 4);
+    c.require(loud > .1f && soft > .01f && std::abs(soft / loud - .25f) < .04f,
+              "Enabled velocity scales cue audio by incoming note velocity");
+    stopAndDrain(engine, output);
+    p.velocityEnabled = false;
+    engine.setLiveProject(p);
+    engine.triggerPad(0, 0, .25f);
+    processMany(engine, output, 4);
+    const auto disabled = processMany(engine, output, 4);
+    c.require(std::abs(disabled / loud - 1) < .04f, "Velocity-disabled playback ignores note velocity");
+    stopAndDrain(engine, output);
+
+    auto vocals = std::make_shared<AudioData>(constant(.1f, source->frames()));
+    auto melody = std::make_shared<AudioData>(constant(.2f, source->frames()));
+    engine.setStem(0, vocals);
+    engine.setStem(1, melody);
+    engine.setLiveProject(p);
+    engine.triggerPad(0);
+    processMany(engine, output, 4);
+    const auto stemSum = processMany(engine, output, 2);
+    p.stemMute[0] = true;
+    engine.setLiveProject(p);
+    const auto withoutVocals = processMany(engine, output, 2);
+    c.require(std::abs(stemSum - .3f) < .002f && std::abs(withoutVocals - .2f) < .002f,
+              "Global stem mute updates current cue mix in the next callback without retrigger");
+    p.pads[0].stemMute[1] = true;
+    engine.setLiveProject(p);
+    c.require(processMany(engine, output, 2) < .00001f, "Live cue stem mask combines with global stem mask");
+    stopAndDrain(engine, output);
+    p.stemMute = {};
+    p.pads[0].stemMute = {false, true, false, false};
+    p.pads[1].stemMute = {true, false, false, false};
+    engine.setLiveProject(p);
+    engine.setKeyboardMode(false, 0);
+    engine.seekSource(1000);
+    engine.playSource();
+    const auto selectedVocals = processMany(engine, output, 4);
+    c.require(std::abs(selectedVocals - .1f) < .002f && engine.playbackSnapshot().sourcePlaying,
+              "Source audition honors selected cue stem mask together with waveform mix");
+    engine.setKeyboardMode(false, 1);
+    const auto selectedMelody = processMany(engine, output, 2);
+    c.require(std::abs(selectedMelody - .2f) < .002f && engine.playbackSnapshot().sourcePlaying,
+              "Changing selected cue updates active source audition stems without pause or retrigger");
+    engine.pauseSource();
+    processBlock(engine, output);
+    engine.clearStems();
+    p.stemMute = {};
+    p.pads[0].stemMute = {};
+    p.pads[0].outputChannel = 2;
+    engine.setLiveProject(p);
+    juce::AudioBuffer<float> multichannel(6, 512);
+    engine.triggerPad(0);
+    processMany(engine, multichannel, 4);
+    c.require(multichannel.getMagnitude(0, 0, 512) == 0 && multichannel.getMagnitude(1, 0, 512) == 0
+        && multichannel.getMagnitude(4, 0, 512) > .05f && multichannel.getMagnitude(5, 0, 512) > .05f,
+              "Cue output routing sends stereo audio to selected hardware pair when available");
+    stopAndDrain(engine, output);
+
+    // Independent real-time keyboard transposition must not consume source at double speed.
+    p.pads[0].outputChannel = 0;
+    p.pads[0].end = 44100;
+    p.pads[0].hasEnd = true;
+    p.keyboardMode = true;
+    p.mono = false;
+    engine.setLiveProject(p);
+    auto capture = [&](float offset) {
+        stopAndDrain(engine, output);
+        engine.triggerPad(0, offset);
+        AudioData captured;
+        captured.sampleRate = 44100;
+        captured.channels.resize(1);
+        for (int block = 0; block < 50; ++block) {
+            processBlock(engine, output);
+            captured.channels[0].insert(captured.channels[0].end(), output.getReadPointer(0), output.getReadPointer(0) + 512);
+        }
+        return captured;
+    };
+    const auto root = capture(0);
+    const auto rootFrame = engine.playbackSnapshot().sourceFrame;
+    const auto octave = capture(12);
+    const auto octaveFrame = engine.playbackSnapshot().sourceFrame;
+    c.require(std::abs(positiveCrossingFrequency(root) - 220) < 8 && std::abs(positiveCrossingFrequency(octave) - 440) < 15,
+              "Keyboard octave changes real-time audio pitch");
+    c.require(std::abs(static_cast<double>(rootFrame) - static_cast<double>(octaveFrame)) < 1536
+        && engine.activeVoiceCount() == 1, "Keyboard pitch preserves source progression and cue duration");
+    p.globalPitchSemitones = -12;
+    engine.setLiveProject(p);
+    AudioData livePitch;
+    livePitch.sampleRate = 44100;
+    livePitch.channels.resize(1);
+    processMany(engine, output, 6);
+    for (int block = 0; block < 18; ++block) {
+        processBlock(engine, output);
+        livePitch.channels[0].insert(livePitch.channels[0].end(), output.getReadPointer(0), output.getReadPointer(0) + 512);
+    }
+    c.require(std::abs(positiveCrossingFrequency(livePitch) - 220) < 18 && engine.activeVoiceCount() == 1,
+              "Live global key shift updates sounding keyboard voice without a new trigger");
+    stopAndDrain(engine, output);
+}
+
+void testGlideAndMetronome(Checks& c) {
+    auto source = std::make_shared<AudioData>(tone(220, 132300));
+    auto p = projectFor(*source);
+    p.pads[0].start = 1000;
+    p.pads[0].releaseMs = 40;
+    p.keyboardMode = true;
+    p.mono = true;
+    p.glideMs = 100;
+    p.glideMode = GlideMode::Sustain;
+    AudioEngine engine;
+    engine.setSource(source);
+    engine.preparePads(p);
+    engine.prepareToPlay(512, 44100);
+    engine.setMasterGain(1);
+    juce::AudioBuffer<float> output(2, 512);
+    engine.setKeyboardMode(true, 0);
+    engine.triggerPad(0, 0);
+    processMany(engine, output, 20);
+    const auto sustainBefore = engine.playbackSnapshot().sourceFrame;
+    engine.triggerPad(0, 12);
+    processBlock(engine, output);
+    c.require(engine.activeVoiceCount() == 1 && engine.playbackSnapshot().sourceFrame > sustainBefore,
+              "Sustain glide reuses mono keyboard voice without restarting cue playhead");
+    processMany(engine, output, 18);
+    AudioData shifted;
+    shifted.sampleRate = 44100;
+    shifted.channels.resize(1);
+    for (int block = 0; block < 20; ++block) {
+        processBlock(engine, output);
+        shifted.channels[0].insert(shifted.channels[0].end(), output.getReadPointer(0), output.getReadPointer(0) + 512);
+    }
+    c.require(std::abs(positiveCrossingFrequency(shifted) - 440) < 20,
+              "Sustain glide reaches the new keyboard note pitch");
+    engine.releasePad(0, 0);
+    processMany(engine, output, 5);
+    c.require(engine.activeVoiceCount() == 1, "Releasing preceding glide note does not stop current sustained note");
+    engine.releasePad(0, 12);
+    processMany(engine, output, 5);
+    c.require(engine.activeVoiceCount() == 0, "Releasing current sustained glide note starts Hold release");
+    p.glideMode = GlideMode::Trigger;
+    engine.setLiveProject(p);
+    engine.triggerPad(0, 0);
+    processMany(engine, output, 20);
+    const auto triggerBefore = engine.playbackSnapshot().sourceFrame;
+    engine.triggerPad(0, 12);
+    processBlock(engine, output);
+    c.require(engine.activeVoiceCount() == 1 && engine.playbackSnapshot().sourceFrame < triggerBefore
+        && engine.playbackSnapshot().sourceFrame >= p.pads[0].start,
+              "Trigger glide starts a new mono keyboard cue while pitch transitions");
+    stopAndDrain(engine, output);
+
+    source = std::make_shared<AudioData>(constant(0, 88200));
+    p = projectFor(*source);
+    engine.setSource(source);
+    engine.preparePads(p);
+    engine.seekSource(0);
+    engine.setMetronome(true);
+    engine.playSource();
+    c.require(processMany(engine, output, 4) > .05f && engine.playbackSnapshot().sourcePlaying,
+              "Metronome generates real click audio while auditioning a silent source");
+    engine.setMetronome(false);
+    c.require(processMany(engine, output, 4) == 0, "Disabling metronome removes click from silent source audition");
+    engine.pauseSource();
+    processBlock(engine, output);
+    engine.setMetronome(true);
+    engine.triggerPad(0);
+    c.require(processMany(engine, output, 48) == 0 && engine.activeVoiceCount() == 1,
+              "Metronome is source-audition only and never sounds during cue playback");
+    stopAndDrain(engine, output);
+}
+
+void testOpenEndedCueCapacity(Checks& c) {
+    auto source = std::make_shared<AudioData>();
+    source->sampleRate = 44100;
+    source->channels.assign(2, std::vector<float>(44100 * 120, .01f));
+    Project p;
+    for (std::size_t i = 0; i < p.pads.size(); ++i) {
+        auto& cue = p.pads[i];
+        cue.start = i * 1000;
+        cue.end = source->frames();
+        cue.hasEnd = false;
+    }
+    AudioEngine engine;
+    engine.setSource(source);
+    engine.preparePads(p);
+    c.require(engine.activeVoiceCount() == 0,
+              "A two-minute stereo source accepts 32 open-ended cues without eager tail rendering or playback");
+}
+
+void testPendingCueEventQueue(Checks& c) {
+    auto source = std::make_shared<AudioData>(tone(220, 44100));
+    Project p;
+    AudioEngine engine;
+    engine.setSource(source);
+    engine.preparePads(p);
+    juce::AudioBuffer<float> output(2, 512);
+    // Empty cues do not require DSP processor preparation or an audio device.
+    engine.seekSource(4242);
+    for (int note = 24; note < 56; ++note)
+        engine.handleIncomingMidiMessage(nullptr, juce::MidiMessage::noteOn(1, note, static_cast<juce::uint8>(64 + note - 24)));
+    engine.handleIncomingMidiMessage(nullptr, juce::MidiMessage::noteOff(1, 24));
+    engine.handleIncomingMidiMessage(nullptr, juce::MidiMessage::noteOff(1, 55));
+    processBlock(engine, output);
+    int count = 0;
+    std::uint32_t mask = 0;
+    bool fields = true;
+    CueAssignment event;
+    while (engine.popPendingCue(event)) {
+        fields &= event.pad >= 0 && event.pad < 32 && event.frame == 4242 && event.semitoneOffset == 0;
+        if (event.pad >= 0 && event.pad < 32) {
+            mask |= std::uint32_t(1) << event.pad;
+            fields &= std::abs(event.velocity - (64.f + event.pad) / 127.f) < .001f;
+            fields &= event.held == (event.pad != 0 && event.pad != 31);
+        }
+        ++count;
+    }
+    c.require(count == 32 && mask == 0xffffffffu,
+              "All 32 simultaneous empty MIDI cues are queued instead of losing all but last event");
+    c.require(fields, "Queued cue assignments retain frame, note velocity and note-off-before-consumption state");
+    c.require(!engine.popPendingCue(event), "Consumed assignment queue is empty");
+
+    engine.triggerPad(1);
+    processBlock(engine, output);
+    engine.setSource(std::make_shared<AudioData>(tone(330, 44100)));
+    engine.preparePads(p);
+    c.require(!engine.popPendingCue(event), "Changing source discards pending assignments from prior source generation");
+    engine.seekSource(9000);
+    engine.triggerPad(2);
+    processBlock(engine, output);
+    c.require(engine.popPendingCue(event) && event.pad == 2 && event.frame == 9000,
+              "New source generation can queue its own cue assignments");
+
+    engine.setKeyboardMode(true, 0);
+    engine.handleIncomingMidiMessage(nullptr, juce::MidiMessage::noteOn(1, 60, static_cast<juce::uint8>(100)));
+    engine.handleIncomingMidiMessage(nullptr, juce::MidiMessage::noteOn(1, 72, static_cast<juce::uint8>(70)));
+    engine.handleIncomingMidiMessage(nullptr, juce::MidiMessage::noteOff(1, 72));
+    processBlock(engine, output);
+    CueAssignment root, octave;
+    c.require(engine.popPendingCue(root) && engine.popPendingCue(octave)
+        && root.pad == 0 && root.semitoneOffset == 0 && root.held
+        && octave.pad == 0 && octave.semitoneOffset == 12 && !octave.held,
+        "Empty keyboard cue chord retains independent pitch and held state for each assignment");
+
+    p.playbackMode = CuePlaybackMode::Trigger;
+    engine.setLiveProject(p);
+    engine.triggerPad(4);
+    processBlock(engine, output);
+    engine.stop(); // UI panic must cancel assignments before the next audio tick.
+    c.require(!engine.popPendingCue(event),
+              "Stop immediately cancels queued Trigger-mode assignments before UI can retrigger them");
+    processBlock(engine, output);
+    engine.handleIncomingMidiMessage(nullptr, juce::MidiMessage::noteOn(1, 29, static_cast<juce::uint8>(100)));
+    processBlock(engine, output);
+    c.require(engine.popPendingCue(event) && event.pad == 5,
+              "After processed Stop a new empty MIDI cue assignment is accepted normally");
+}
+
+struct CallbackHeapCalls {
+    std::size_t allocations = 0, deallocations = 0, cAllocatorCalls = 0, cFreeCalls = 0;
+    bool empty() const { return allocations == 0 && deallocations == 0 && cAllocatorCalls == 0 && cFreeCalls == 0; }
+};
+
+CallbackHeapCalls probeCallbackHeap(AudioEngine& engine, juce::AudioBuffer<float>& output, int blocks) {
+    callbackHeapProbe::allocations = callbackHeapProbe::deallocations = 0;
+    callbackHeapProbe::cAllocatorCalls = callbackHeapProbe::cFreeCalls = 0;
+    struct Scope {
+        Scope() { callbackHeapProbe::enabled = true; }
+        ~Scope() { callbackHeapProbe::enabled = false; }
+    };
+    {
+        const Scope scope;
+        for (int block = 0; block < blocks; ++block)
+            engine.getNextAudioBlock(juce::AudioSourceChannelInfo(&output, 0, output.getNumSamples()));
+    }
+    return {callbackHeapProbe::allocations, callbackHeapProbe::deallocations,
+            callbackHeapProbe::cAllocatorCalls, callbackHeapProbe::cFreeCalls};
+}
+
+void testCallbackCppHeap(Checks& c) {
+    auto source = std::make_shared<AudioData>(tone(220, 176400));
+    auto p = projectFor(*source);
+    p.pads[0].releaseMs = 80;
+    p.keyboardMode = true;
+    p.glideMs = 100;
+    p.glideMode = GlideMode::Sustain;
+    AudioEngine engine;
+    engine.setSource(source);
+    engine.preparePads(p);
+    engine.prepareToPlay(512, 44100);
+    juce::AudioBuffer<float> output(2, 512);
+    engine.triggerPad(0);
+    const auto neutral = probeCallbackHeap(engine, output, 4);
+    c.require(neutral.empty(),
+              "Prepared neutral callback performs no calling-thread allocator/deallocator calls");
+    stopAndDrain(engine, output);
+    engine.triggerPad(0, 12);
+    const auto pitched = probeCallbackHeap(engine, output, 12);
+    c.require(pitched.empty(),
+              "Prepared octave trigger and streaming callbacks perform no calling-thread allocator/deallocator calls");
+    p.pads[0].levelDb = -6;
+    engine.setLiveProject(p);
+    const auto live = probeCallbackHeap(engine, output, 4);
+    c.require(live.empty(),
+              "Adopting published live cue controls performs no callback allocator/deallocator calls");
+    engine.triggerPad(0, 0);
+    const auto glide = probeCallbackHeap(engine, output, 12);
+    c.require(glide.empty(),
+              "Prepared sustain-glide pitch transition performs no callback allocator/deallocator calls");
+    std::cout << "Callback C++ heap calls (alloc/free): neutral " << neutral.allocations << '/' << neutral.deallocations
+              << ", pitch " << pitched.allocations << '/' << pitched.deallocations << ", live " << live.allocations << '/' << live.deallocations
+              << ", glide " << glide.allocations << '/' << glide.deallocations << '\n';
+   #if defined(SAMPLIFY_WRAP_C_ALLOCATIONS)
+    std::cout << "Callback linked-code C allocator/free calls: neutral " << neutral.cAllocatorCalls << '/' << neutral.cFreeCalls
+              << ", pitch " << pitched.cAllocatorCalls << '/' << pitched.cFreeCalls << ", live " << live.cAllocatorCalls << '/' << live.cFreeCalls
+              << ", glide " << glide.cAllocatorCalls << '/' << glide.cFreeCalls << '\n';
+   #else
+    std::cout << "C allocator wrapping is unavailable in this build; heap probe covers C++ operators only.\n";
+   #endif
+    stopAndDrain(engine, output);
+    p.glideMs = 0;
+    engine.setLiveProject(p);
+    for (const float semitones : {7.f, 48.f, -48.f}) {
+        engine.triggerPad(0, semitones);
+        const auto extreme = probeCallbackHeap(engine, output, 16);
+        c.require(extreme.empty(), "Supported keyboard pitch trigger/stream performs no intercepted heap calls");
+        std::cout << "Callback extreme pitch " << semitones << " C++ " << extreme.allocations << '/' << extreme.deallocations
+                  << ", linked C " << extreme.cAllocatorCalls << '/' << extreme.cFreeCalls << '\n';
+        stopAndDrain(engine, output);
+    }
+    p.pads[0].speedRatio = .25f;
+    p.projectBpm = 30;
+    p.sourceBpm = 300;
+    engine.setLiveProject(p);
+    engine.triggerPad(0, 12);
+    const auto slow = probeCallbackHeap(engine, output, 16);
+    c.require(slow.empty(), "Supported slow cue/global tempo combination performs no intercepted callback heap calls");
+    stopAndDrain(engine, output);
+    p.pads[0].speedRatio = 4;
+    p.projectBpm = 300;
+    p.sourceBpm = 30;
+    engine.setLiveProject(p);
+    engine.triggerPad(0, -12);
+    const auto fast = probeCallbackHeap(engine, output, 16);
+    c.require(fast.empty(), "Supported fast cue/global tempo combination performs no intercepted callback heap calls");
+    std::cout << "Callback tempo edges C++ slow " << slow.allocations << '/' << slow.deallocations
+              << ", fast " << fast.allocations << '/' << fast.deallocations << "; linked C slow "
+              << slow.cAllocatorCalls << '/' << slow.cFreeCalls << ", fast " << fast.cAllocatorCalls << '/' << fast.cFreeCalls << '\n';
+    stopAndDrain(engine, output);
+    p.projectBpm = p.sourceBpm = 120;
+    for (const float speed : {.25f, 4.f}) {
+        p.pads[0].speedRatio = speed;
+        engine.setLiveProject(p);
+        engine.triggerPad(0, 7);
+        const auto tempo = probeCallbackHeap(engine, output, 16);
+        c.require(tempo.empty(), "Quarter/four-times cue tempo with non-octave pitch performs no intercepted heap calls");
+        std::cout << "Callback cue speed " << speed << " C++ " << tempo.allocations << '/' << tempo.deallocations
+                  << ", linked C " << tempo.cAllocatorCalls << '/' << tempo.cFreeCalls << '\n';
+        stopAndDrain(engine, output);
+    }
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    std::string only;
+    if (argc == 3 && std::string(argv[1]) == "--only") only = argv[2];
+    else if (argc != 1) {
+        std::cerr << "Usage: SamplifyIntegrationTests [--only audio|session|export|playback|live|glide|capacity|pending|heap]\n";
+        return 2;
+    }
     juce::ScopedJuceInitialiser_GUI juceInitialiser;
     Checks checks;
+    bool selected = false;
     try {
         TemporaryDirectory temporary;
-        checks.section("WAV import/export", [&] { testAudioFiles(checks, temporary.path); });
-        checks.section("Session persistence", [&] { testSessions(checks, temporary.path); });
-        checks.section("Imported stems and rendered export", [&] { testStemsAndExport(checks); });
-        checks.section("Playback callback and MIDI", [&] { testPlaybackAndMidi(checks); });
+        const auto run = [&](const char* id, const char* title, auto&& fn) {
+            if (!only.empty() && only != id) return;
+            selected = true;
+            checks.section(title, fn);
+        };
+        run("audio", "WAV import/export", [&] { testAudioFiles(checks, temporary.path); });
+        run("session", "Session persistence", [&] { testSessions(checks, temporary.path); });
+        run("export", "Imported stems and rendered export", [&] { testStemsAndExport(checks); });
+        run("playback", "Playback callback and MIDI", [&] { testPlaybackAndMidi(checks); });
+        run("live", "Live controls, velocity and keyboard", [&] { testLiveControlsVelocityAndKeyboard(checks); });
+        run("glide", "Glide and source metronome", [&] { testGlideAndMetronome(checks); });
+        run("capacity", "Open-ended cue capacity", [&] { testOpenEndedCueCapacity(checks); });
+        run("pending", "Pending cue assignment queue", [&] { testPendingCueEventQueue(checks); });
+        run("heap", "Callback C++ heap probe", [&] { testCallbackCppHeap(checks); });
     } catch (const std::exception& error) {
         std::cerr << "Test setup failed: " << error.what() << '\n';
         return 1;
     }
+    if (!selected) { std::cerr << "Unknown test section: " << only << '\n'; return 2; }
     std::cout << checks.checked << " checks, " << checks.failed << " failures\n";
     return checks.failed == 0 ? 0 : 1;
 }

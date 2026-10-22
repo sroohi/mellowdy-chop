@@ -8,9 +8,19 @@
 
 namespace samplify {
 
+enum class CuePlaybackMode { Hold, Trigger };
+enum class GlideMode { Trigger, Sustain };
+
+struct TempoMarker {
+    std::size_t frame = 0;
+    double bpm = 120;
+};
+
 struct AudioData {
     double sampleRate = 44100.0;
     std::vector<std::vector<float>> channels;
+    std::string title;
+    std::string artist;
     std::size_t frames() const { return channels.empty() ? 0 : channels.front().size(); }
     double duration() const { return sampleRate > 0 ? static_cast<double>(frames()) / sampleRate : 0; }
     bool valid() const;
@@ -22,11 +32,16 @@ struct Pad {
     float levelDb = 0;
     float pitchSemitones = 0;
     float detuneCents = 0;
-    float timeRatio = 1;
+    float speedRatio = 1;
     float filter = 0.5f;
-    float attackMs = 5;
-    float releaseMs = 150;
+    float attackMs = 0;
+    float releaseMs = 10000;
     bool reverse = false;
+    bool hasEnd = true;
+    bool favorite = false;
+    std::string name;
+    std::uint32_t colour = 0xffbe3128;
+    int outputChannel = 0;
     std::array<bool, 4> stemMute { false, false, false, false };
     bool empty() const { return end <= start; }
 };
@@ -40,7 +55,18 @@ struct Project {
     bool quantize = false;
     bool syncTempo = false;
     bool syncKey = false;
-    int padCount = 16;
+    int padCount = 32;
+    CuePlaybackMode playbackMode = CuePlaybackMode::Hold;
+    bool velocityEnabled = false;
+    bool pitchTimeEnabled = true;
+    bool keyboardMode = false;
+    float globalPitchSemitones = 0;
+    float globalDetuneCents = 0;
+    float glideMs = 0;
+    GlideMode glideMode = GlideMode::Trigger;
+    std::array<bool, 4> stemMute { false, false, false, false };
+    std::vector<TempoMarker> tempoMarkers;
+    bool beatgridEnabled = true;
     std::array<Pad, 32> pads;
 };
 
@@ -59,6 +85,6 @@ struct Analysis {
     std::vector<WaveformBin> waveform;
 };
 
-enum class ChopMode { Transients, Grid, Random };
+enum class ChopMode { Transients, Grid, Random, KeyShift, SeratoDJ };
 
 } // namespace samplify

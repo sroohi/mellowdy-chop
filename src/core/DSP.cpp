@@ -1,4 +1,7 @@
 #include "DSP.h"
+#if SAMPLIFY_USE_RUBBERBAND
+#include "dsp/RubberBandProcessor.h"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -225,6 +228,7 @@ void estimateRhythm(const std::vector<double>& samples, double rate, const Audio
     }
 }
 
+#if !SAMPLIFY_USE_RUBBERBAND
 std::vector<std::vector<float>> stretch(const std::vector<std::vector<float>>& input,
                                       std::size_t outputFrames, double sampleRate) {
     const auto frames = input.front().size();
@@ -306,6 +310,7 @@ std::vector<std::vector<float>> stretch(const std::vector<std::vector<float>>& i
     return output;
 }
 
+#endif
 std::optional<int> keyRoot(std::string name) {
     const auto begin = name.find_first_not_of(" \t\n\r");
     if (begin == std::string::npos) return std::nullopt;
@@ -417,22 +422,27 @@ AudioData renderPad(const AudioData& audio, const Pad& pad, double speedRatio) {
     AudioData result;
     result.sampleRate = audio.sampleRate;
     if (!audio.valid() || pad.empty() || pad.start >= audio.frames()
-        || !std::isfinite(speedRatio) || speedRatio <= 0 || !std::isfinite(pad.timeRatio) || pad.timeRatio <= 0
+        || !std::isfinite(speedRatio) || speedRatio <= 0 || !std::isfinite(pad.speedRatio) || pad.speedRatio <= 0
         || !std::isfinite(pad.pitchSemitones) || !std::isfinite(pad.detuneCents)
         || !std::isfinite(pad.levelDb) || !std::isfinite(pad.filter)
         || !std::isfinite(pad.attackMs) || !std::isfinite(pad.releaseMs)) return result;
     const auto end = std::min(pad.end, audio.frames());
     const auto frames = end - pad.start;
-    const double durationRatio = std::clamp(static_cast<double>(pad.timeRatio) / speedRatio, 0.125, 8.0);
+    const double durationRatio = std::clamp(1.0 / (static_cast<double>(pad.speedRatio) * speedRatio), 1.0 / 64, 64.0);
     const double pitch = std::pow(2.0, std::clamp(static_cast<double>(pad.pitchSemitones)
-                                                + pad.detuneCents / 100.0, -24.0, 24.0) / 12);
+                                                + pad.detuneCents / 100.0, -60.0, 60.0) / 12);
     const double desired = frames * durationRatio;
     // Avoid excessive allocations from malformed settings or very long pads.
     // Limits are explicit failures, never silent truncation of exported audio.
     const double sampleBudget = 64.0 * 1024 * 1024 / audio.channels.size();
-    if (desired <= 0 || desired > sampleBudget || desired * pitch > sampleBudget) return result;
+    if (desired <= 0 || desired > sampleBudget) return result;
+#if !SAMPLIFY_USE_RUBBERBAND
+    if (desired * pitch > sampleBudget) return result;
+#endif
     const auto outputFrames = std::max<std::size_t>(1, static_cast<std::size_t>(std::llround(desired)));
+#if !SAMPLIFY_USE_RUBBERBAND
     const auto stretchedFrames = std::max<std::size_t>(1, static_cast<std::size_t>(std::llround(outputFrames * pitch)));
+#endif
     std::vector<std::vector<float>> selected;
     selected.reserve(audio.channels.size());
     for (const auto& channel : audio.channels) {
@@ -440,6 +450,12 @@ AudioData renderPad(const AudioData& audio, const Pad& pad, double speedRatio) {
                               channel.begin() + static_cast<std::ptrdiff_t>(end));
         if (pad.reverse) std::reverse(selected.back().begin(), selected.back().end());
     }
+#if SAMPLIFY_USE_RUBBERBAND
+    AudioData fragment;
+    fragment.sampleRate = audio.sampleRate;
+    fragment.channels = std::move(selected);
+    result = renderDurationPitch(fragment, durationRatio, 12 * std::log2(pitch));
+#else
     auto expanded = stretch(selected, stretchedFrames, audio.sampleRate);
     result.channels.assign(audio.channels.size(), std::vector<float>(outputFrames));
     for (std::size_t c = 0; c < result.channels.size(); ++c) {
@@ -469,13 +485,16 @@ AudioData renderPad(const AudioData& audio, const Pad& pad, double speedRatio) {
                 result.channels[c][i] = weight != 0 ? static_cast<float>(std::clamp(sample / weight, -limit, limit)) : 0;
             }
         }
+    }
+#endif
+    for (std::size_t c = 0; c < result.channels.size(); ++c) {
         const double gain = std::pow(10.0, std::clamp(static_cast<double>(pad.levelDb), -96.0, 24.0) / 20);
         const double filter = std::clamp(static_cast<double>(pad.filter), 0.0, 1.0);
-        const double cutoff = filter < 0.5 ? 80 * std::pow(200.0, filter * 2)
-                                            : 20 * std::pow(500.0, (filter - 0.5) * 2);
+        const double cutoff = filter < 0.5 ? 80 * std::pow(17000.0 / 80.0, filter * 2)
+                                            : 80 * std::pow(17000.0 / 80.0, (filter - 0.5) * 2);
         const double alpha = 1 - std::exp(-2 * pi * std::min(cutoff, audio.sampleRate * 0.45) / audio.sampleRate);
-        const double attack = std::clamp(static_cast<double>(pad.attackMs), 0.0, 5000.0) * audio.sampleRate / 1000;
-        const double release = std::clamp(static_cast<double>(pad.releaseMs), 0.0, 5000.0) * audio.sampleRate / 1000;
+        const double attack = std::clamp(static_cast<double>(pad.attackMs), 0.0, 10000.0) * audio.sampleRate / 1000;
+        const double release = std::clamp(static_cast<double>(pad.releaseMs), 0.0, 10000.0) * audio.sampleRate / 1000;
         double state = 0;
         for (std::size_t i = 0; i < outputFrames; ++i) {
             double sample = result.channels[c][i];

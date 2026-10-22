@@ -6,7 +6,7 @@ class SamplifyApplication final : public juce::JUCEApplication, private juce::Me
                                  private juce::Timer {
 public:
     const juce::String getApplicationName() override { return "Samplify"; }
-    const juce::String getApplicationVersion() override { return "0.1.0"; }
+    const juce::String getApplicationVersion() override { return "0.2.0"; }
     bool moreThanOneInstanceAllowed() override { return false; }
 
     void initialise(const juce::String& arguments) override {
@@ -66,49 +66,75 @@ public:
             case 7: content.stopPlayback(); break;
             case 8: content.loadDemo(); break;
             case 9: juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,
-                "Samplify by MP Audio", "Standalone sampler / version 0.1.0\n\n"
-                "Import audio, find chops, play pads and export WAV files.\n"
-                "Stem controls use imported, aligned stem files. Neural separation is not included.\n\n"
-                "Licensed under GPL-3.0. Built with JUCE 8."); break;
+                "Samplify by MP Audio", "Standalone sampler / version 0.2.0\n\n"
+                "Cue performance and editing based on the documented Serato Sample 2.x workflow.\n"
+                "Independent Rubber Band pitch/time and native HTDemucs four-stem processing.\n"
+                "This app does not contain Serato's proprietary engines.\n\n"
+                "GPL-3.0. Built with JUCE 8; Rubber Band and Demucs notices are bundled."); break;
             default: break;
         }
     }
 
 private:
-    void timerCallback() override {
-        if (!window || ++smokeAttempts > 600) {
-            juce::Logger::writeToLog("Samplify UI smoke test timed out waiting for analysed audio and rendered pads");
-            setApplicationReturnValue(1); stopTimer(); quit(); return;
-        }
+    bool saveSmokeImage(const juce::String& name) {
         auto& main = window->content();
-        if (!main.isReadyForSmokeTest()) return;
-        stopTimer();
-        bool success = smokeDirectory.createDirectory().wasOk();
         auto image = main.createComponentSnapshot(main.getLocalBounds(), true, 1.0f);
-        auto output = smokeDirectory.getChildFile("Samplify.png").createOutputStream();
-        juce::PNGImageFormat png;
-        if (output) { output->setPosition(0); output->truncate(); }
-        success = output && png.writeImageToStream(image, *output) && success;
-        output.reset();
+        auto output = smokeDirectory.getChildFile(name).createOutputStream();
+        if (!output) return false;
+        output->setPosition(0); output->truncate();
+        return juce::PNGImageFormat().writeImageToStream(image, *output);
+    }
+    void timerCallback() override {
+        if (!window) return;
+        auto& main = window->content();
+        if (++smokeAttempts > 2400) {
+            finishSmoke("Timed out waiting for the UI workflow and native stem separation"); return;
+        }
+        try {
+            if (smokeStage == 0) {
+                if (smokeDirectory.createDirectory().failed()) throw std::runtime_error("Cannot create smoke evidence directory");
+                blankScreenshotSaved = saveSmokeImage("Samplify-empty.png");
+                main.loadDemo(); smokeStage = 1;
+            } else if (smokeStage == 1 && main.isReadyForSmokeTest()) {
+                workflowChecks = main.runWorkflowSmoke();
+                main.beginStemSmoke(); smokeStage = 2;
+            } else if (smokeStage == 2 && main.isStemSmokeReady()) {
+                stemWorkflowChecks = main.stemSmokeResult();
+                if (auto* checks = stemWorkflowChecks.getDynamicObject()) {
+                    for (const auto& item : checks->getProperties())
+                        if (!item.value.isBool() || !static_cast<bool>(item.value))
+                            throw std::runtime_error("Native stem UI workflow failed: " + item.name.toString().toStdString());
+                } else throw std::runtime_error("Native stem UI workflow returned no checks");
+                stemSeparationCompleted = true; finishSmoke({});
+            }
+        } catch (const std::exception& e) { finishSmoke(e.what()); }
+    }
+    void finishSmoke(const juce::String& error) {
+        stopTimer();
+        auto& main = window->content();
+        bool success = error.isEmpty() && blankScreenshotSaved && stemSeparationCompleted;
+        const bool normalSaved = saveSmokeImage("Samplify.png");
         const auto normalWidth = main.getWidth(), normalHeight = main.getHeight();
-        main.setSize(1120, 756);
-        auto compact = main.createComponentSnapshot(main.getLocalBounds(), true, 1.0f);
-        auto compactOutput = smokeDirectory.getChildFile("Samplify-compact.png").createOutputStream();
-        if (compactOutput) { compactOutput->setPosition(0); compactOutput->truncate(); }
-        success = compactOutput && png.writeImageToStream(compact, *compactOutput) && success;
-        compactOutput.reset();
+        main.setSize(960, 720);
+        const bool compactSaved = saveSmokeImage("Samplify-compact.png");
         main.setSize(normalWidth, normalHeight);
         auto* report = new juce::DynamicObject();
         report->setProperty("demoAnalysedAndPadsRendered", main.isReadyForSmokeTest());
+        report->setProperty("workflowChecks", workflowChecks);
+        report->setProperty("stemWorkflowChecks", stemWorkflowChecks);
+        report->setProperty("stemSeparationCompleted", stemSeparationCompleted);
+        report->setProperty("blankScreenshotSaved", blankScreenshotSaved);
+        report->setProperty("error", error);
         report->setProperty("width", main.getWidth()); report->setProperty("height", main.getHeight());
        #if JUCE_MAC
         report->setProperty("macOSRun", true);
        #else
         report->setProperty("macOSRun", false);
        #endif
-        report->setProperty("screenshotSaved", success);
+        report->setProperty("screenshotSaved", normalSaved && compactSaved);
+        success = success && normalSaved && compactSaved;
         success = smokeDirectory.getChildFile("smoke.json").replaceWithText(juce::JSON::toString(juce::var(report))) && success;
-        juce::Logger::writeToLog(success ? "Samplify UI smoke test passed" : "Samplify UI smoke test failed writing evidence");
+        juce::Logger::writeToLog(success ? "Samplify UI smoke test passed" : "Samplify UI smoke test failed: " + error);
         setApplicationReturnValue(success ? 0 : 1); quit();
     }
     class MainWindow final : public juce::DocumentWindow {
@@ -118,8 +144,8 @@ private:
             auto* main = new MainComponent();
             setContentOwned(main, true);
             setResizable(true, false);
-            setResizeLimits(1120, 780, 2560, 1800);
-            centreWithSize(1360, 900);
+            setResizeLimits(960, 744, 2560, 1800);
+            centreWithSize(1280, 984);
             setVisible(true);
         }
         MainComponent& content() { return *static_cast<MainComponent*>(getContentComponent()); }
@@ -128,7 +154,9 @@ private:
     juce::LookAndFeel_V4 lookAndFeel;
     std::unique_ptr<MainWindow> window;
     juce::File smokeDirectory;
-    int smokeAttempts = 0;
+    juce::var workflowChecks, stemWorkflowChecks;
+    int smokeAttempts = 0, smokeStage = 0;
+    bool blankScreenshotSaved = false, stemSeparationCompleted = false;
 };
 }
 

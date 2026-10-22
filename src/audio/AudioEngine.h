@@ -6,6 +6,29 @@
 
 namespace samplify {
 
+struct CueAssignment {
+    int pad = -1;
+    std::size_t frame = 0;
+    float velocity = 1;
+    float semitoneOffset = 0;
+    bool held = true;
+};
+
+struct PlaybackSnapshot {
+    std::size_t sourceFrame = 0;
+    bool sourcePlaying = false;
+    std::uint32_t activeCueMask = 0;
+    int lastTriggeredPad = -1;
+    std::uint64_t triggerSerial = 0;
+    int pendingCuePad = -1;
+    std::size_t pendingCueFrame = 0;
+    std::uint64_t pendingCueSerial = 0;
+    float pendingCueVelocity = 1;
+    float pendingCueSemitoneOffset = 0;
+    bool pendingCueHeld = true;
+    float peak = 0;
+};
+
 class AudioEngine final : public juce::AudioSource, public juce::MidiInputCallback {
 public:
     AudioEngine();
@@ -18,10 +41,17 @@ public:
     void setStem(int index, std::shared_ptr<const AudioData> stem);
     void clearStems();
     void preparePads(const Project& project);
-    void triggerPad(int index, bool quantize = false, float semitoneOffset = 0);
+    void triggerPad(int index, float semitoneOffset = 0, float velocity = 1);
     void releasePad(int index);
     void releasePad(int index, float semitoneOffset);
     void stop();
+    void playSource();
+    void pauseSource();
+    void seekSource(std::size_t frame);
+    PlaybackSnapshot playbackSnapshot() const;
+    bool popPendingCue(CueAssignment& assignment);
+    void setLiveProject(const Project& project);
+    void setMetronome(bool enabled);
     void setMasterGain(float gain);
     void setMono(bool mono);
     int activeVoiceCount() const;

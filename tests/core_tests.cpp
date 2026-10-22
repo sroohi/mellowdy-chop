@@ -46,6 +46,9 @@ bool bounded(const std::vector<Pad>& pads, std::size_t frames) {
 }
 
 void modelAndInvalidInputs() {
+    const Project defaults;
+    check(defaults.padCount == 32, "project has 32 cue slots by default");
+    check(defaults.playbackMode == CuePlaybackMode::Hold, "Hold is the default cue playback mode");
     AudioData empty;
     check(!empty.valid(), "empty audio is invalid");
     auto audio = tone(440);
@@ -179,11 +182,20 @@ void rendering() {
     check(higher.valid() && higher.frames() == audio.frames(), "pitch shift preserves duration");
     check(std::abs(frequency(higher) - 880) < 10, "octave transpose doubles tone frequency");
     pad.pitchSemitones = 0;
-    pad.timeRatio = 1.5;
-    const auto longer = renderPad(audio, pad);
-    check(longer.frames() == audio.frames() * 3 / 2 && std::abs(frequency(longer) - 440) < 5,
-          "pad time ratio multiplies duration independently of pitch");
-    pad.timeRatio = 1;
+    pad.speedRatio = 1.5;
+    const auto cueFaster = renderPad(audio, pad);
+    check(std::abs(static_cast<double>(cueFaster.frames()) - audio.frames() / 1.5) <= 1
+        && std::abs(frequency(cueFaster) - 440) < 7,
+          "cue speed ratio divides duration independently of pitch");
+    pad.speedRatio = 2;
+    const auto doubleSpeed = renderPad(audio, pad);
+    check(doubleSpeed.frames() == audio.frames() / 2 && std::abs(frequency(doubleSpeed) - 440) < 7,
+          "2x cue speed halves duration while preserving pitch");
+    pad.speedRatio = .5f;
+    const auto halfSpeed = renderPad(audio, pad);
+    check(halfSpeed.frames() == audio.frames() * 2 && std::abs(frequency(halfSpeed) - 440) < 7,
+          "half cue speed doubles duration while preserving pitch");
+    pad.speedRatio = 1;
     pad.reverse = true;
     const auto reversed = renderPad(audio, pad);
     check(reversed.channels[0].front() == audio.channels[0].back()
@@ -198,9 +210,9 @@ void rendering() {
     pad.start = 0;
     pad.end = audio.frames() + 200;
     check(renderPad(audio, pad).frames() == audio.frames(), "pad end clamps to source bounds");
-    pad.timeRatio = std::numeric_limits<float>::quiet_NaN();
+    pad.speedRatio = std::numeric_limits<float>::quiet_NaN();
     check(!renderPad(audio, pad).valid(), "NaN control is rejected");
-    pad.timeRatio = 1;
+    pad.speedRatio = 1;
     check(!renderPad(audio, pad, 0).valid(), "zero playback speed is rejected");
     AudioData tiny;
     tiny.channels = {{0.5f}};

@@ -1,0 +1,22 @@
+Native four-stem separation in Samplify
+
+Demucs model and architecture
+Copyright (c) Meta Platforms, Inc. and affiliates. MIT license.
+Source: https://github.com/facebookresearch/demucs
+Official checkpoint: https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/955717e8-8726e21a.th
+Checkpoint SHA-256: 8726e21a993978c7ba086d3872e7608d7d5bfca646ca4aca459ffda844faa8b4
+Native converted model SHA-256: 72b17c42d308982ddb5069bc3bf48b81a5aac4cb6516e4366c0fa7cef6df0064
+Conversion recipe: script/prepare_stem_model.py in the Samplify source repository.
+
+demucs.cpp native inference
+Copyright (c) 2023 Sevag H. MIT license.
+Source: https://github.com/sevagh/demucs.cpp/tree/f1206e9adeea103aef4a636b9e62297cf1f8e34e
+Build-local modifications check model-record EOF headers and stabilize near-zero
+normalization. These changes are recorded in cmake/StemBackend.cmake in Samplify.
+
+Eigen
+Mozilla Public License 2.0; see Eigen-MPL-2.0.txt.
+Corresponding source: https://gitlab.com/libeigen/eigen/-/tree/dd8c71e62852b2fe429edb6682ac91fd1c578a26
+
+This is an independent HTDemucs implementation. It does not contain or claim to
+reproduce the proprietary Serato Stems model.

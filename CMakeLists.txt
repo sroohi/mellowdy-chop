@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.28)
-project(Samplify VERSION 0.1.0 LANGUAGES C CXX)
+project(Samplify VERSION 0.2.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -9,10 +9,15 @@ if(APPLE)
 endif()
 
 option(SAMPLIFY_BUILD_APP "Build the standalone desktop application" ON)
+option(SAMPLIFY_HIGH_QUALITY_STRETCH "Use native Rubber Band processing" ${SAMPLIFY_BUILD_APP})
 include(CTest)
 
-add_library(SamplifyCore src/core/Model.cpp src/core/DSP.cpp)
+add_library(SamplifyCore src/core/Model.cpp src/core/DSP.cpp src/core/CueEditing.cpp)
 target_include_directories(SamplifyCore PUBLIC src)
+if(SAMPLIFY_HIGH_QUALITY_STRETCH)
+    include(cmake/AudioBackends.cmake)
+    target_link_libraries(SamplifyCore PUBLIC SamplifyStretch)
+endif()
 if(MSVC)
     target_compile_options(SamplifyCore PRIVATE /W4)
 else()
@@ -22,9 +27,21 @@ if(BUILD_TESTING)
     add_executable(SamplifyCoreTests tests/core_tests.cpp)
     target_link_libraries(SamplifyCoreTests PRIVATE SamplifyCore)
     add_test(NAME SamplifyCoreTests COMMAND SamplifyCoreTests)
+    add_executable(SamplifyCueEditingTests tests/cue_editing_tests.cpp)
+    target_link_libraries(SamplifyCueEditingTests PRIVATE SamplifyCore)
+    add_test(NAME SamplifyCueEditingTests COMMAND SamplifyCueEditingTests)
+    if(SAMPLIFY_HIGH_QUALITY_STRETCH)
+        add_executable(SamplifyStretchTests tests/stretch_tests.cpp src/core/Model.cpp)
+        target_link_libraries(SamplifyStretchTests PRIVATE SamplifyStretch)
+        add_test(NAME SamplifyStretchTests COMMAND SamplifyStretchTests)
+    endif()
 endif()
 
 if(SAMPLIFY_BUILD_APP)
+    if(NOT SAMPLIFY_HIGH_QUALITY_STRETCH)
+        message(FATAL_ERROR "The native app requires the Rubber Band backend")
+    endif()
+    include(cmake/StemBackend.cmake)
     include(FetchContent)
     FetchContent_Declare(JUCE
         URL https://codeload.github.com/juce-framework/JUCE/tar.gz/51a8a6d7aeae7326956d747737ccf1575e61e209
@@ -46,7 +63,9 @@ if(SAMPLIFY_BUILD_APP)
         src/Main.cpp
         src/audio/AudioEngine.cpp
         src/audio/SessionIO.cpp
-        src/ui/MainComponent.cpp)
+        src/audio/SeratoMetadata.cpp
+        src/ui/MainComponent.cpp
+        src/ui/SourceWaveform.cpp)
     target_include_directories(Samplify PRIVATE src)
     target_compile_definitions(Samplify PRIVATE
         JUCE_WEB_BROWSER=0
@@ -55,10 +74,21 @@ if(SAMPLIFY_BUILD_APP)
         JUCE_REPORT_APP_USAGE=0
         JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:Samplify,JUCE_PRODUCT_NAME>"
         JUCE_APPLICATION_VERSION_STRING="${PROJECT_VERSION}")
-    target_link_libraries(Samplify PRIVATE SamplifyCore
+    target_link_libraries(Samplify PRIVATE SamplifyCore SamplifyStems
         juce::juce_audio_utils juce::juce_dsp
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags)
+    samplify_add_stem_resources(Samplify)
+    configure_file("${samplifyrubberband_SOURCE_DIR}/COPYING" "${CMAKE_BINARY_DIR}/RubberBand-COPYING.txt" COPYONLY)
+    target_sources(Samplify PRIVATE resources/THIRD_PARTY_NOTICES.md LICENSE "${CMAKE_BINARY_DIR}/RubberBand-COPYING.txt")
+    set_source_files_properties(resources/THIRD_PARTY_NOTICES.md LICENSE "${CMAKE_BINARY_DIR}/RubberBand-COPYING.txt"
+        PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+    if(NOT APPLE)
+        add_custom_command(TARGET Samplify POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Samplify>/Resources"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SAMPLIFY_STEM_MODEL_FILE}"
+                "$<TARGET_FILE_DIR:Samplify>/Resources/ggml-model-htdemucs-4s-f16.bin")
+    endif()
     if(BUILD_TESTING)
         juce_add_console_app(SamplifyIntegrationTests PRODUCT_NAME "SamplifyIntegrationTests")
         target_sources(SamplifyIntegrationTests PRIVATE tests/integration_tests.cpp
@@ -68,6 +98,18 @@ if(SAMPLIFY_BUILD_APP)
             JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
         target_link_libraries(SamplifyIntegrationTests PRIVATE SamplifyCore
             juce::juce_audio_utils juce::juce_dsp juce::juce_recommended_config_flags)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            target_compile_definitions(SamplifyIntegrationTests PRIVATE SAMPLIFY_WRAP_C_ALLOCATIONS=1)
+            target_link_options(SamplifyIntegrationTests PRIVATE
+                -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free,--wrap=posix_memalign,--wrap=aligned_alloc)
+        endif()
         add_test(NAME SamplifyIntegrationTests COMMAND SamplifyIntegrationTests)
+        juce_add_console_app(SamplifyMetadataTests PRODUCT_NAME "SamplifyMetadataTests")
+        target_sources(SamplifyMetadataTests PRIVATE tests/serato_metadata_tests.cpp src/audio/SeratoMetadata.cpp)
+        target_include_directories(SamplifyMetadataTests PRIVATE src)
+        target_compile_definitions(SamplifyMetadataTests PRIVATE JUCE_USE_CURL=0)
+        target_link_libraries(SamplifyMetadataTests PRIVATE SamplifyCore juce::juce_core juce::juce_recommended_config_flags)
+        add_test(NAME SamplifyMetadataTests COMMAND SamplifyMetadataTests)
+        set_tests_properties(SamplifyIntegrationTests PROPERTIES TIMEOUT 900)
     endif()
 endif()
