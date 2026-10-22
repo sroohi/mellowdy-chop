@@ -516,6 +516,7 @@ struct AudioEngine::Impl {
     }
     void applyCommand(const Command& command, const Bank* bank) {
         if (command.type == CommandType::Stop) {
+            lastTriggeredPad.store(-1);
             assignmentCancellation.fetch_add(1);
             pendingCueHeld.store(false);
             for (auto& padHolds : pendingHolds) for (auto& hold : padHolds) hold.store(false);
@@ -686,7 +687,8 @@ AudioData AudioEngine::readAudio(const juce::File& file) {
     return data;
 }
 
-void AudioEngine::writeAudio(const juce::File& file, const AudioData& data) {
+namespace {
+void writeWaveFile(const juce::File& file, const AudioData& data, int bitsPerSample) {
     if (!data.valid() || data.channels.size() > 2 || data.frames() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
         throw std::runtime_error("There is no valid audio to export.");
     juce::TemporaryFile temporary(file);
@@ -698,7 +700,7 @@ void AudioEngine::writeAudio(const juce::File& file, const AudioData& data) {
     if (!data.artist.empty()) metadata.set(juce::WavAudioFormat::riffInfoArtist, cleanMetadata(juce::String::fromUTF8(data.artist.c_str())));
     if (!data.title.empty()) metadata.set(juce::WavAudioFormat::riffInfoTitle, cleanMetadata(juce::String::fromUTF8(data.title.c_str())));
     std::unique_ptr<juce::AudioFormatWriter> writer(format.createWriterFor(
-        stream.get(), data.sampleRate, static_cast<unsigned int>(data.channels.size()), 24, metadata, 0));
+        stream.get(), data.sampleRate, static_cast<unsigned int>(data.channels.size()), bitsPerSample, metadata, 0));
     if (!writer)
         throw std::runtime_error("The WAV encoder could not be created.");
     stream.release(); // The writer now owns the stream.
@@ -708,8 +710,10 @@ void AudioEngine::writeAudio(const juce::File& file, const AudioData& data) {
     for (std::size_t offset = 0; offset < data.frames(); offset += blockSize) {
         const auto count = static_cast<int>(std::min<std::size_t>(blockSize, data.frames() - offset));
         for (std::size_t channel = 0; channel < data.channels.size(); ++channel)
-            for (int sample = 0; sample < count; ++sample)
-                block.setSample(static_cast<int>(channel), sample, std::clamp(data.channels[channel][offset + static_cast<std::size_t>(sample)], -1.0f, 1.0f));
+            for (int sample = 0; sample < count; ++sample) {
+                const float value = data.channels[channel][offset + static_cast<std::size_t>(sample)];
+                block.setSample(static_cast<int>(channel), sample, bitsPerSample == 32 ? value : std::clamp(value, -1.f, 1.f));
+            }
         if (!writer->writeFromAudioSampleBuffer(block, 0, count)) {
             succeeded = false;
             break;
@@ -719,6 +723,15 @@ void AudioEngine::writeAudio(const juce::File& file, const AudioData& data) {
     writer.reset();
     if (!succeeded || !temporary.overwriteTargetFileWithTemporary())
         throw std::runtime_error("The WAV file could not be saved. Check disk space and folder permissions.");
+}
+} // namespace
+
+void AudioEngine::writeAudio(const juce::File& file, const AudioData& data) {
+    writeWaveFile(file, data, 24);
+}
+
+void AudioEngine::writeFloatAudio(const juce::File& file, const AudioData& data) {
+    writeWaveFile(file, data, 32);
 }
 
 void AudioEngine::setSource(std::shared_ptr<const AudioData> source) {

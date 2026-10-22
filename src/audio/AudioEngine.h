@@ -36,6 +36,7 @@ public:
     juce::String initialise();
     static AudioData readAudio(const juce::File& file);
     static void writeAudio(const juce::File& file, const AudioData& data);
+    static void writeFloatAudio(const juce::File& file, const AudioData& data);
     // Source/stem assignment and cache preparation run off the audio callback.
     void setSource(std::shared_ptr<const AudioData> source);
     void setStem(int index, std::shared_ptr<const AudioData> stem);

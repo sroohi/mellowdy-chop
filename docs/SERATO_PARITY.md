@@ -181,14 +181,17 @@ implementation.
 | Completed validation | Observed result and scope |
 | --- | --- |
 | Latest registered CTest run | **5/5 suites passed**: portable core **61** checks, cue editing **62**, stretch **25**, native stems **17**, Serato metadata **40**. |
-| Device-free audio/session/MIDI integration | **114 checks passed, 0 failed**. C++ and linked static-C allocator hooks observed zero allocation/deallocation on the exercised callback paths, including +/-48-semitone, Glide and tempo-edge cases. This does not certify every hardware deadline or every possible call path. |
+| Device-free audio/session/MIDI integration | **123 checks passed, 0 failed**. C++ and linked static-C allocator hooks observed zero allocation/deallocation on the exercised callback paths, including +/-48-semitone, Glide and tempo-edge cases. This does not certify every hardware deadline or every possible call path. |
 | Stretch capacity repair | Three targeted capacity-patch cases also passed sanitizer validation; the current stretch suite passed 25/25. |
 | Embedded Serato cue metadata | **40 fixture checks**, including sanitizer validation, cover supported ID3/GEOB and FLAC comment paths, legacy/modern markers, cue names/colors and malformed inputs. |
 | Native model execution | **17 checks** used real inference and verified frame alignment, distinct stem outputs, reconstruction behavior and cancellation. These are functional checks, not comparison against Serato's separated audio. |
 | Latest real GUI run | **21 controller workflow checks and 6 stem workflow checks passed** with real UI/model execution and an empty error field. Normal **1280 x 960**, compact **960 x 720**, and empty-state screenshots were saved. The report correctly identifies this as a Linux run, not macOS. |
 
-The new macOS build, native launch, packaging and signing checks have not yet
-completed at this status snapshot. Physical audio/MIDI devices, multichannel
+The first rebuild passed native macOS compilation, all six test suites, and
+universal architecture checks in [run 39779683282](https://github.com/sroohi/mellowdy-chop/actions/runs/39779683282).
+Its native GUI gate blocked packaging. The follow-up fixes stale cue focus after
+Stop and preserves unclipped audio in 32-bit float stem caches; a fresh native
+GUI and packaging run is required for these changes. Physical audio/MIDI devices, multichannel
 hardware routing, performance under a representative production workload, and
 direct comparison with a specified running Serato Sample version remain to be
 verified.

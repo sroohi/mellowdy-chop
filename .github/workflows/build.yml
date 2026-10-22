@@ -112,6 +112,14 @@ jobs:
           import struct
           import time
 
+          def annotation_text(message):
+              return str(message).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+          def fail(message):
+              message = str(message)[:4000]
+              print("::error title=Native macOS smoke::" + annotation_text(message), flush=True)
+              raise SystemExit(message)
+
           directory = Path(os.environ["SAMPLIFY_SMOKE_DIR"])
           report_path = directory / "smoke.json"
           deadline = time.monotonic() + 270
@@ -122,28 +130,43 @@ jobs:
                   break
               except (FileNotFoundError, json.JSONDecodeError):
                   time.sleep(0.25)
+              except OSError as error:
+                  fail(f"Could not read native smoke report: {error}")
           if report is None:
-              raise SystemExit("Native macOS app did not finish its controller and neural-stem smoke test within 270 seconds. Check launch/crash logs and GUI availability.")
+              fail("Native macOS app did not finish its controller and neural-stem smoke test within 270 seconds. Check launch/crash logs and GUI availability.")
+          if not isinstance(report, dict):
+              fail("Native macOS smoke report must be a JSON object.")
+          public_report = dict(report)
+          public_report["error"] = str(report.get("error", ""))[:2000]
+          report_json = json.dumps(public_report, sort_keys=True, ensure_ascii=True)
+          print("::notice title=Native macOS smoke report::" + annotation_text(report_json), flush=True)
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a") as summary:
+                  summary.write("### Native macOS controller and stem report\n\n```json\n" + report_json + "\n```\n")
           for field in ("macOSRun", "demoAnalysedAndPadsRendered", "screenshotSaved", "blankScreenshotSaved", "stemSeparationCompleted"):
               if report.get(field) is not True:
-                  raise SystemExit(f"Native app smoke test failed: {field} was not true: {report}")
+                  fail(f"Native app smoke test failed: {field} was not true. App error: {public_report['error']}")
           for group, minimum in (("workflowChecks", 10), ("stemWorkflowChecks", 1)):
               checks = report.get(group)
               if not isinstance(checks, dict) or len(checks) < minimum:
-                  raise SystemExit(f"Native app smoke report requires at least {minimum} named boolean checks in {group}.")
+                  fail(f"Native app smoke report requires at least {minimum} named boolean checks in {group}.")
               failed = [name for name, passed in checks.items() if passed is not True]
               if failed:
-                  raise SystemExit(f"Native app controller checks failed in {group}: {failed}")
+                  fail(f"Native app controller checks failed in {group}: {failed}")
               print(f"Passed {len(checks)} native controller checks in {group}: {', '.join(sorted(checks))}")
           for filename in ("Samplify.png", "Samplify-empty.png", "Samplify-compact.png"):
-              image = (directory / filename).read_bytes()
+              try:
+                  image = (directory / filename).read_bytes()
+              except OSError as error:
+                  fail(f"Native app screenshot missing or unreadable: {filename}: {error}")
               if len(image) < 24 or image[:8] != b"\x89PNG\r\n\x1a\n":
-                  raise SystemExit(f"Native app did not save a valid PNG screenshot: {filename}")
+                  fail(f"Native app did not save a valid PNG screenshot: {filename}")
               width, height = struct.unpack(">II", image[16:24])
               if width <= 0 or height <= 0:
-                  raise SystemExit(f"Native app screenshot has invalid dimensions: {filename}")
+                  fail(f"Native app screenshot has invalid dimensions: {filename}")
               if filename == "Samplify.png" and (width, height) != (report.get("width"), report.get("height")):
-                  raise SystemExit(f"Native app screenshot dimensions disagree with report: {width} x {height}: {report}")
+                  fail(f"Native app screenshot dimensions disagree with report: {width} x {height}, expected {report.get('width')} x {report.get('height')}")
               print(f"Native macOS UI evidence: {filename}, {width} x {height}.")
           PY
       - name: Upload native macOS UI evidence

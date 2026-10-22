@@ -72,7 +72,7 @@ build overrides are detailed in [deployment instructions](docs/DEPLOYMENT.md).
    and speed independent; bypass uses varispeed.
 6. Click **Vocals**, **Melody**, **Bass**, or **Drums** to isolate a stem mix.
    The first use separates the source in a cancellable background task and
-   caches aligned stems. Click to mute or Shift-click to solo. Stem choices can
+   caches aligned stems as unclipped 32-bit float WAV. Click to mute or Shift-click to solo. Stem choices can
    apply globally or to selected cues, and the waveform follows the audible mix.
 7. Save a `.samplify` session, or export the selected cue or occupied bank as
    processed 24-bit WAV files.

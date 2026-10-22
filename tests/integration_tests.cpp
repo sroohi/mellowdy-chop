@@ -224,6 +224,51 @@ void testAudioFiles(Checks& c, const juce::File& directory) {
     nonfinite.channels[0][30] = std::numeric_limits<float>::quiet_NaN();
     c.rejects([&] { AudioEngine::writeAudio(file, nonfinite); }, "Export rejects non-finite samples");
     c.require(AudioEngine::readAudio(file).frames() == original.frames(), "Invalid export preserves existing WAV");
+
+    auto stemA = constant(0, 512), stemB = stemA;
+    for (std::size_t channel = 0; channel < stemA.channels.size(); ++channel) {
+        for (std::size_t frame = 0; frame < stemA.frames(); ++frame) {
+            const float sign = (frame % 2 == 0) ? 1.f : -1.f;
+            stemA.channels[channel][frame] = sign * 1.2f;
+            stemB.channels[channel][frame] = -sign * .8f;
+        }
+    }
+    const auto cacheA = directory.getChildFile("cached-stem-a.wav");
+    const auto cacheB = directory.getChildFile("cached-stem-b.wav");
+    AudioEngine::writeFloatAudio(cacheA, stemA);
+    AudioEngine::writeFloatAudio(cacheB, stemB);
+    const auto restoredA = AudioEngine::readAudio(cacheA), restoredB = AudioEngine::readAudio(cacheB);
+    c.require(restoredA.valid() && restoredA.channels == stemA.channels && restoredB.channels == stemB.channels,
+              "32-bit float stem cache preserves finite samples above and below full scale without clipping");
+    auto sourceMix = stemA;
+    bool cancellation = true;
+    for (std::size_t channel = 0; channel < stemA.channels.size(); ++channel) {
+        for (std::size_t frame = 0; frame < stemA.frames(); ++frame) {
+            sourceMix.channels[channel][frame] = stemA.channels[channel][frame] + stemB.channels[channel][frame];
+            const float restoredSum = restoredA.channels[channel][frame] + restoredB.channels[channel][frame];
+            cancellation &= std::abs(restoredSum - sourceMix.channels[channel][frame]) < .000001f
+                && std::abs(std::abs(restoredSum) - .4f) < .000001f;
+        }
+    }
+    c.require(cancellation, "Float cache retains cancelling stem sums of plus/minus 0.4 instead of clipped plus/minus 0.2");
+    AudioEngine stemEngine;
+    stemEngine.setSource(std::make_shared<AudioData>(sourceMix));
+    stemEngine.setStem(0, std::make_shared<AudioData>(restoredA));
+    stemEngine.setStem(1, std::make_shared<AudioData>(restoredB));
+    const auto mixedExport = stemEngine.renderForExport(projectFor(sourceMix), 0);
+    c.require(mixedExport.valid() && mixedExport.channels == sourceMix.channels,
+              "Reloaded float cache stems reproduce the original in-memory cue mix exactly");
+    const auto pcm = directory.getChildFile("clamped-pcm.wav");
+    AudioEngine::writeAudio(pcm, stemA);
+    const auto clipped = AudioEngine::readAudio(pcm);
+    c.require(clipped.valid() && clipped.channels[0][0] > .9999f && clipped.channels[0][0] <= 1
+        && clipped.channels[0][1] <= -.9999f && clipped.channels[0][1] >= -1,
+        "User-facing 24-bit PCM export keeps its documented full-scale clipping behavior");
+    auto badCache = stemA;
+    badCache.channels[0][0] = std::numeric_limits<float>::quiet_NaN();
+    c.rejects([&] { AudioEngine::writeFloatAudio(cacheA, badCache); }, "Float cache rejects non-finite audio");
+    c.require(AudioEngine::readAudio(cacheA).channels == stemA.channels,
+              "Rejected float cache write leaves prior valid cache file intact");
 }
 
 void testSessions(Checks& c, const juce::File& directory) {
@@ -432,6 +477,32 @@ float processMany(AudioEngine& engine, juce::AudioBuffer<float>& buffer, int blo
 void stopAndDrain(AudioEngine& engine, juce::AudioBuffer<float>& buffer) {
     engine.stop();
     processMany(engine, buffer, 4);
+}
+
+void testTriggerStopChronology(Checks& c) {
+    auto source = std::make_shared<AudioData>(tone(220, 44100));
+    const auto p = projectFor(*source);
+    AudioEngine engine;
+    engine.setSource(source);
+    engine.preparePads(p);
+    juce::AudioBuffer<float> output(2, 512);
+    const auto before = engine.playbackSnapshot().triggerSerial;
+    engine.triggerPad(0);
+    engine.stop();
+    processMany(engine, output, 4);
+    const auto stopped = engine.playbackSnapshot();
+    c.require(stopped.lastTriggeredPad == -1,
+              "Trigger followed by Stop in one callback clears stale cue-selection notification");
+    c.require(stopped.triggerSerial > before,
+              "Processed Stop preserves monotonic trigger history rather than resetting serial");
+    engine.stop();
+    engine.triggerPad(1);
+    processBlock(engine, output);
+    const auto restarted = engine.playbackSnapshot();
+    c.require(restarted.lastTriggeredPad == 1 && restarted.triggerSerial > stopped.triggerSerial
+        && engine.activeVoiceCount() == 1,
+        "Stop followed by Trigger in one callback retains newer cue notification and playback");
+    stopAndDrain(engine, output);
 }
 
 void testPlaybackAndMidi(Checks& c) {
@@ -991,7 +1062,7 @@ int main(int argc, char** argv) {
     std::string only;
     if (argc == 3 && std::string(argv[1]) == "--only") only = argv[2];
     else if (argc != 1) {
-        std::cerr << "Usage: SamplifyIntegrationTests [--only audio|session|export|playback|live|glide|capacity|pending|heap]\n";
+        std::cerr << "Usage: SamplifyIntegrationTests [--only audio|session|export|chronology|playback|live|glide|capacity|pending|heap]\n";
         return 2;
     }
     juce::ScopedJuceInitialiser_GUI juceInitialiser;
@@ -1007,6 +1078,7 @@ int main(int argc, char** argv) {
         run("audio", "WAV import/export", [&] { testAudioFiles(checks, temporary.path); });
         run("session", "Session persistence", [&] { testSessions(checks, temporary.path); });
         run("export", "Imported stems and rendered export", [&] { testStemsAndExport(checks); });
+        run("chronology", "Trigger/Stop callback chronology", [&] { testTriggerStopChronology(checks); });
         run("playback", "Playback callback and MIDI", [&] { testPlaybackAndMidi(checks); });
         run("live", "Live controls, velocity and keyboard", [&] { testLiveControlsVelocityAndKeyboard(checks); });
         run("glide", "Glide and source metronome", [&] { testGlideAndMetronome(checks); });

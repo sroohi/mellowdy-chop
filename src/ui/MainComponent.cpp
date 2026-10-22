@@ -753,9 +753,15 @@ void MainComponent::loadSource(const juce::File& file, std::optional<Session> re
         }
         for (const auto& cue : updated.pads) if (cue.start > input->frames() || cue.end > input->frames()) throw std::runtime_error("Cue offsets exceed this audio file. Locate the original source audio.");
         bool regenerateStems = false;
+       #if JUCE_LINUX
+        const auto oldGeneratedCacheRoot = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("Samplify/Stems");
+       #else
+        const auto oldGeneratedCacheRoot = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory).getChildFile("Samplify/Stems");
+       #endif
         for (int i = 0; i < 4; ++i) {
             if (cancel.load()) return Completion {};
             if (paths[static_cast<std::size_t>(i)] != juce::File()) {
+                if (paths[static_cast<std::size_t>(i)].isAChildOf(oldGeneratedCacheRoot)) { regenerateStems = true; break; }
                 try {
                     auto stem = std::make_shared<AudioData>(AudioEngine::readAudio(paths[static_cast<std::size_t>(i)]));
                     if (stem->sampleRate != input->sampleRate || stem->frames() != input->frames() || stem->channels.size() != input->channels.size()) { regenerateStems = true; break; }
@@ -886,9 +892,9 @@ void MainComponent::separateStems() {
     runTask("Initialising native stem separation...", [this, input, file, state](const std::atomic<bool>& cancel) {
         const auto stamp = file.getFullPathName() + juce::String(file.getSize()) + juce::String(file.getLastModificationTime().toMilliseconds());
        #if JUCE_LINUX
-        const auto root = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("Samplify/Stems");
+        const auto root = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("Samplify/Stems-float32");
        #else
-        const auto root = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory).getChildFile("Samplify/Stems");
+        const auto root = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory).getChildFile("Samplify/Stems-float32");
        #endif
         const auto cache = root.getChildFile(juce::String::toHexString(stamp.hashCode64()));
         if (cache.createDirectory().failed()) throw std::runtime_error("Cannot create the stem cache folder");
@@ -921,7 +927,7 @@ void MainComponent::separateStems() {
             for (int i = 0; i < 4; ++i) {
                 if (cancel.load()) return Completion {};
                 auto audio = std::make_shared<AudioData>(std::move(result[static_cast<std::size_t>(i)]));
-                AudioEngine::writeAudio(paths[static_cast<std::size_t>(i)], *audio); separated[static_cast<std::size_t>(i)] = audio;
+                AudioEngine::writeFloatAudio(paths[static_cast<std::size_t>(i)], *audio); separated[static_cast<std::size_t>(i)] = audio;
             }
         }
         if (cancel.load()) return Completion {};
@@ -1306,6 +1312,15 @@ juce::var MainComponent::runWorkflowSmoke() {
         mouseUp(altClick);
         require("altKeyDisplayCyclePreservesPitch", keyDisplayFormat == (formatBeforeAlt + 1) % 3 && project.globalPitchSemitones == pitchBeforeAlt && globalPitch.getValue() == pitchBeforeAlt && formattedKey("C minor", 0, 1) == "5A" && formattedKey("C minor", 0, 2) == "10m" && formattedKey("C major", 0, 1) == "8B" && formattedKey("C major", 0, 2) == "1d");
         restore();
+        if (engine.deviceManager().getCurrentAudioDevice() == nullptr) {
+            // Headless Linux has no hardware callback. Exercise the queued
+            // workflow triggers and final Stop using the real audio callback.
+            // Preparation and scratch allocation happen outside that callback.
+            engine.prepareToPlay(512, 44100);
+            juce::AudioBuffer<float> scratch(2, 512);
+            const juce::AudioSourceChannelInfo block(&scratch, 0, 512);
+            for (int i = 0; i < 3; ++i) engine.getNextAudioBlock(block);
+        }
         return result;
     } catch (...) { restore(); throw; }
 }
