@@ -45,7 +45,7 @@ from live processing.
 
 The Linux Debug build passes all 11 CTest suites, including 43 workstation audio
 checks and 38 schema-3 session checks. Five callback probes found zero intercepted
-C++ or linked-C allocation/deallocation calls. The host has 30 lifecycle/state
+C++ or linked-C allocation/deallocation calls. The host has 40 lifecycle/state
 checks; the native macOS variant additionally scans, instantiates, processes and
 restores a real Apple Audio Unit. The GUI smoke exercises sampler editing, actual
 neural separation, workstation controllers and every page. The release workflow

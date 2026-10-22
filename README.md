@@ -98,7 +98,7 @@ and **Perform**. Open and Save retain the whole studio, including plugin state.
   Edit notes in the grid, including duration, velocity and pitch. Playback modes
   distinguish the selected pattern, the arrangement and live performance.
 - **Arrange:** place pattern or imported audio clips on eight tracks. Move,
-  resize, loop and duplicate clips; edit their offset, level and placement.
+  resize, loop and duplicate clips; edit their level and placement.
   **Bounce Pattern** freezes the sampler and built-in processing into an audio
   file so it survives a source change. Keep its resulting asset file available.
 - **FX Rack:** each track and the master have four built-in inserts and four

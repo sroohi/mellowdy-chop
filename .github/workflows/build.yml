@@ -59,7 +59,7 @@ jobs:
           -DSAMPLIFY_STEM_MODEL_FILE="$SAMPLIFY_STEM_MODEL_FILE"
           -DBUILD_TESTING=ON
       - name: Build app and tests
-        run: cmake --build build --config Release --parallel 2
+        run: python3 script/run_ci_check.py cmake --build build --config Release --parallel 2
       - name: Verify all required test suites are registered
         run: |
           python3 - <<'PY'
@@ -80,7 +80,7 @@ jobs:
           print("Required suites registered: " + ", ".join(sorted(required)))
           PY
       - name: Run all sampler, workstation, effects, plugin-host, and session tests
-        run: ctest --test-dir build --build-config Release --timeout 900 --output-on-failure
+        run: python3 script/run_ci_check.py ctest --test-dir build --build-config Release --timeout 900 --output-on-failure
       - name: Verify universal executable
         run: |
           python3 - <<'PY'

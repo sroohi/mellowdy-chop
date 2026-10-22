@@ -52,12 +52,13 @@ struct Probe {
 };
 class GainEffect final : public juce::AudioPluginInstance {
 public:
-    explicit GainEffect(Probe& p, float gain = .5f)
+    explicit GainEffect(Probe& p, float gain = .5f, juce::PluginDescription description = fakeDescription())
         : AudioPluginInstance(BusesProperties().withInput("Input", juce::AudioChannelSet::stereo(), true)
-                                               .withOutput("Output", juce::AudioChannelSet::stereo(), true)), probe(p), multiplier(gain) {}
+                                               .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
+          probe(p), multiplier(gain), nativeDescription(std::move(description)) {}
     ~GainEffect() override { ++probe.destroyed; if (std::this_thread::get_id() == probe.audioThread) probe.destroyedOnAudioThread = true; }
-    const juce::String getName() const override { return "Host test gain"; }
-    void fillInPluginDescription(juce::PluginDescription& d) const override { d = fakeDescription(); }
+    const juce::String getName() const override { return nativeDescription.name; }
+    void fillInPluginDescription(juce::PluginDescription& d) const override { d = nativeDescription; }
     void prepareToPlay(double, int) override { ++probe.prepared; }
     void releaseResources() override { ++probe.released; }
     void processBlock(juce::AudioBuffer<float>& b, juce::MidiBuffer&) override {
@@ -88,13 +89,14 @@ public:
 private:
     Probe& probe;
     float multiplier;
+    juce::PluginDescription nativeDescription;
 };
 class GainFormat final : public juce::AudioPluginFormat {
 public:
     explicit GainFormat(Probe& p) : probe(p) {}
     juce::String getName() const override { return fakeDescription().pluginFormatName; }
     void findAllTypesForFile(juce::OwnedArray<juce::PluginDescription>& types, const juce::String&) override { types.add(new juce::PluginDescription(fakeDescription())); }
-    bool fileMightContainThisPluginType(const juce::String& path) override { return path == fakeDescription().fileOrIdentifier; }
+    bool fileMightContainThisPluginType(const juce::String& path) override { return path.startsWith("/missing/HostTest"); }
     juce::String getNameOfPluginFromIdentifier(const juce::String&) override { return fakeDescription().name; }
     bool pluginNeedsRescanning(const juce::PluginDescription&) override { return false; }
     bool doesPluginStillExist(const juce::PluginDescription&) override { return true; }
@@ -105,8 +107,8 @@ public:
     bool requiresUnblockedMessageThreadDuringCreation(const juce::PluginDescription&) const override { return false; }
     GainEffect* current = nullptr;
 protected:
-    void createPluginInstance(const juce::PluginDescription&, double, int, PluginCreationCallback callback) override {
-        auto effect = std::make_unique<GainEffect>(probe);
+    void createPluginInstance(const juce::PluginDescription& description, double, int, PluginCreationCallback callback) override {
+        auto effect = std::make_unique<GainEffect>(probe, .5f, description);
         current = effect.get(); callback(std::move(effect), {});
     }
 private:
@@ -221,6 +223,63 @@ void nativeEditSnapshotTest() {
     fill(left, right); host.processStereo(0, left.data(), right.data(), 128);
     require(left[0] == .25f, "Explicit restore applies the saved native parameter blob");
 }
+void reentrantBatchRestoreTest() {
+    Probe probe;
+    PluginHost host(std::make_unique<GainFormat>(probe));
+    WorkstationState incoming;
+    struct Insert { int bus, slot; float gain; HostedPluginSlot expected; };
+    std::array<Insert, 3> inserts {{ { 0, 0, .2f, {} }, { 3, 2, .35f, {} }, { 8, 3, .8f, {} } }};
+    for (auto& insert : inserts) {
+        auto description = fakeDescription();
+        description.name = "Batch gain " + juce::String(insert.bus);
+        description.fileOrIdentifier = "/missing/HostTest-" + juce::String(insert.bus) + ".vst3";
+        description.uniqueId += insert.bus;
+        auto& saved = insert.expected;
+        saved.name = description.name.toStdString(); saved.identifier = description.fileOrIdentifier.toStdString();
+        saved.format = description.pluginFormatName.toStdString(); saved.manufacturer = description.manufacturerName.toStdString();
+        saved.xmlDescription = description.createXml()->toString().toStdString();
+        saved.stateBase64 = juce::Base64::toBase64(&insert.gain, sizeof(insert.gain)).toStdString();
+        if (insert.bus == PluginHost::masterBus) incoming.masterPlugins[static_cast<std::size_t>(insert.slot)] = saved;
+        else incoming.tracks[static_cast<std::size_t>(insert.bus)].plugins[static_cast<std::size_t>(insert.slot)] = saved;
+    }
+    int notifications = 0;
+    host.onChange = [&] {
+        ++notifications;
+        // This deliberately aliases applyState's const input, matching the UI's
+        // syncPluginState callback: one notification copies every hosted cell.
+        for (int bus = 0; bus < PluginHost::busCount; ++bus) for (int slot = 0; slot < PluginHost::slotCount; ++slot) {
+            auto& target = bus == PluginHost::masterBus ? incoming.masterPlugins[static_cast<std::size_t>(slot)]
+                : incoming.tracks[static_cast<std::size_t>(bus)].plugins[static_cast<std::size_t>(slot)];
+            target = host.getSlotState(bus, slot);
+        }
+    };
+    host.applyState(incoming, true);
+    require(notifications == 1, "A multi-slot session restore emits one coherent synchronous host notification");
+    for (const auto& insert : inserts) {
+        const auto& actual = insert.bus == PluginHost::masterBus ? incoming.masterPlugins[static_cast<std::size_t>(insert.slot)]
+            : incoming.tracks[static_cast<std::size_t>(insert.bus)].plugins[static_cast<std::size_t>(insert.slot)];
+        require(actual.xmlDescription == insert.expected.xmlDescription && actual.stateBase64 == insert.expected.stateBase64,
+                "Reentrant UI synchronization preserves every pending descriptor and payload");
+    }
+    require(waitFor([&] { return std::all_of(inserts.begin(), inserts.end(), [&](const auto& insert) { return !host.isLoading(insert.bus, insert.slot); }); }),
+            "Every plugin in the aliased session restores asynchronously");
+    require(notifications == 4 && probe.prepared == 3, "All three native completions retain independent post-batch notifications");
+    std::array<float, 257> left, right;
+    for (const auto& insert : inserts) {
+        const auto actual = host.getSlotState(insert.bus, insert.slot);
+        fill(left, right); host.processStereo(insert.bus, left.data(), right.data(), 128);
+        require(actual.xmlDescription == insert.expected.xmlDescription && actual.stateBase64 == insert.expected.stateBase64
+                    && std::abs(left[0] - insert.gain) < .00001f && std::abs(right[0] - insert.gain) < .00001f,
+                "Each restored slot keeps its distinct native identity and processes its saved parameter value");
+    }
+    incoming.tracks[0].plugins[0].bypass = true;
+    incoming.tracks[3].plugins[2] = {};
+    incoming.masterPlugins[3].bypass = true;
+    host.applyState(incoming);
+    require(notifications == 5 && host.getSlotState(0, 0).bypass && host.getSlotState(3, 2).empty()
+                && host.getSlotState(8, 3).bypass,
+            "Batched removal and bypass changes also survive all-slot UI synchronization");
+}
 
 #if JUCE_MAC
 void appleAudioUnitTest() {
@@ -262,7 +321,7 @@ void appleAudioUnitTest() {
 }
 int main() {
     juce::ScopedJuceInitialiser_GUI initialiser;
-    deterministicTests(); retirementTest(); nativeEditSnapshotTest();
+    deterministicTests(); retirementTest(); nativeEditSnapshotTest(); reentrantBatchRestoreTest();
    #if JUCE_MAC
     appleAudioUnitTest();
    #endif

@@ -146,7 +146,20 @@ struct PluginHost::Core final : juce::Timer, std::enable_shared_from_this<Core> 
     std::thread scanWorker;
     std::shared_ptr<std::atomic<bool>> scanCancelled = std::make_shared<std::atomic<bool>>(false);
     bool scanning = false;
+    int notificationDepth = 0;
+    bool pendingNotification = false;
     juce::String scanMessage = "Scan to discover installed Audio Units and VST3 effects";
+
+    struct NotificationBatch {
+        Core& host;
+        explicit NotificationBatch(Core& c) : host(c) { ++host.notificationDepth; }
+        ~NotificationBatch() {
+            if (--host.notificationDepth == 0 && host.pendingNotification) {
+                host.pendingNotification = false;
+                host.changed();
+            }
+        }
+    };
 
     Core(PluginHost* p, std::unique_ptr<juce::AudioPluginFormat> additionalFormat) : owner(p) {
         formats.addDefaultFormats();
@@ -165,7 +178,10 @@ struct PluginHost::Core final : juce::Timer, std::enable_shared_from_this<Core> 
         active.store(nullptr, std::memory_order_seq_cst);
         racks.clear(); nodes.clear();
     }
-    void changed() { if (owner && owner->onChange) owner->onChange(); }
+    void changed() {
+        if (notificationDepth > 0) { pendingNotification = true; return; }
+        if (owner && owner->onChange) owner->onChange();
+    }
     void timerCallback() override { reclaim(); }
     void reclaim() {
         const auto* current = active.load(std::memory_order_seq_cst);
@@ -415,9 +431,17 @@ juce::String PluginHost::status(int b, int s) const {
 }
 HostedPluginSlot PluginHost::getSlotState(int b, int s) const { return valid(b, s) ? core->cells[static_cast<std::size_t>(b)][static_cast<std::size_t>(s)].state : HostedPluginSlot {}; }
 void PluginHost::applyState(const WorkstationState& state, bool forceRestore) {
+    // Listeners commonly synchronize every UI slot from getSlotState(). They
+    // may therefore mutate the very WorkstationState passed into this method.
+    // Own the full request before invoking any rack operation, and expose one
+    // coherent notification only after all requested cells have been applied.
+    std::array<std::array<HostedPluginSlot, slotCount>, busCount> desired;
+    for (int b = 0; b < busCount; ++b)
+        desired[static_cast<std::size_t>(b)] = b == masterBus ? state.masterPlugins
+            : state.tracks[static_cast<std::size_t>(b)].plugins;
+    Core::NotificationBatch batch(*core);
     for (int b = 0; b < busCount; ++b) for (int s = 0; s < slotCount; ++s) {
-        const auto& wanted = b == masterBus ? state.masterPlugins[static_cast<std::size_t>(s)]
-                                           : state.tracks[static_cast<std::size_t>(b)].plugins[static_cast<std::size_t>(s)];
+        const auto& wanted = desired[static_cast<std::size_t>(b)][static_cast<std::size_t>(s)];
         auto& c = core->cells[static_cast<std::size_t>(b)][static_cast<std::size_t>(s)];
         const bool heldSnapshot = wanted.stateBase64 == c.lastAppliedBase64;
         const bool capturedSnapshot = wanted.stateBase64 == c.state.stateBase64;
