@@ -16,7 +16,7 @@ capture. Everything saves together in a studio session.
 
 The downloadable releases include screenshots captured from the actual native
 macOS app, plus the checked controller and neural-stem workflow report.
-Development captures: [Song](docs/Samplify-arrange.png),
+Native macOS captures: [Song](docs/Samplify-arrange.png),
 [Patterns](docs/Samplify-patterns.png), [FX Rack](docs/Samplify-fx.png),
 [Perform](docs/Samplify-perform.png), [Bank B](docs/Samplify-bank-b.png),
 [Envelope](docs/Samplify-envelope.png), [Stems](docs/Samplify-stems.png) and
@@ -29,6 +29,11 @@ These independent engines do not establish identical sound or exact parity with
 Serato's proprietary Stems and Pitch 'n Time processing.
 
 ## Download or build
+
+[Download Samplify 0.4 for macOS](https://github.com/sroohi/mellowdy-chop/releases/download/samplify-v0.4.0-065cdf2/Samplify-macOS-universal.dmg)
+([ZIP alternative](https://github.com/sroohi/mellowdy-chop/releases/download/samplify-v0.4.0-065cdf2/Samplify-macOS-universal.zip)).
+The [release](https://github.com/sroohi/mellowdy-chop/releases/tag/samplify-v0.4.0-065cdf2)
+includes native screenshots, test evidence and checksums.
 
 The [deployment guide](docs/DEPLOYMENT.md) explains GitHub Actions downloads,
 universal Apple Silicon/Intel ZIP and DMG packages, and signing. A successful

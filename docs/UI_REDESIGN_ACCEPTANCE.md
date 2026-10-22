@@ -143,5 +143,17 @@ a real active BPM text editor retains its focus and uncommitted text through
 a control refresh, and commits the expected value afterward. Ordinary refresh
 now changes visibility only for controls entering or leaving the layout.
 
-Native macOS build/smoke receipts and physical audio/MIDI checks remain pending
-for this redesign. Earlier 0.3 screenshots and native runs do not replace them.
+The [native macOS workflow](https://github.com/sroohi/mellowdy-chop/actions/runs/39805453727)
+then passed all 11 required suites in 38 seconds and all **96 native GUI flags**:
+29 sampler, six real-stem, 47 workstation and 14 console checks. Its report has
+`macOSRun: true` and an empty error field. The Linux-only offline callback guard
+accounts for the one-check count difference. Native captures are 1440×890;
+the compact capture is 1180×800. The repository's 11 images now use these actual
+native captures.
+
+The [published 0.4.0 release](https://github.com/sroohi/mellowdy-chop/releases/tag/samplify-v0.4.0-065cdf2)
+was built from `065cdf2eae75bd3113c39f37c8fd4f335b3610e7`. Its downloadable
+ZIP, DMG, model and notices were downloaded again and matched every published
+SHA-256 entry. Physical audio/MIDI devices, arbitrary third-party plug-ins and
+first-launch trust remain separate user-machine checks. This development
+package is ad-hoc signed and is not Apple-notarized.
